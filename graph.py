@@ -4,10 +4,10 @@ from torch_geometric.utils import degree
 from typing import Optional
 import pandas as pd
 
-"""Base graph starts here: 
+"""
     things to add:
-    make everything mre modular 
-    and make efficent and add more functions
+    make everything more modular 
+    and make efficient and add more functions
     """
 class node:
 	def __init__(self, IPaddress: str, node_id: int, features: torch.Tensor) -> None:
