@@ -229,7 +229,7 @@ def build_window_data(
 		src_ids = window_df[src_col].map(node_map).astype(int).to_numpy()
 		dst_ids = window_df[dst_col].map(node_map).astype(int).to_numpy()
 		edge_index = torch.tensor([src_ids, dst_ids], dtype=torch.long)
-
+        #edge_index = torch.from_numpy(np.array([src_ids, dst_ids])).long() # alternative depending on speed
 		edge_attr = torch.tensor(window_df[feature_cols].to_numpy(), dtype=torch.float)
 		y_edge = torch.tensor(window_df["edge_label"].to_numpy(), dtype=torch.float)
 
