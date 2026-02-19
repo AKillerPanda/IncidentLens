@@ -146,6 +146,8 @@ class BaseGNNEncoder(ABC, nn.Module):
         """
         self.eval()
         emb = self.forward(data)
+        if emb.numel() == 0:
+            return emb.float()
         # L2-normalize for cosine similarity in Elasticsearch kNN
         norms = emb.norm(dim=1, keepdim=True).clamp(min=1e-8)
         return (emb / norms).float()
@@ -161,12 +163,14 @@ class BaseGNNEncoder(ABC, nn.Module):
         """
         self.eval()
         logits = self.predict(data)
+        if logits.numel() == 0:
+            return torch.zeros(0, dtype=torch.long), torch.zeros(0)
         if logits.dim() == 2 and logits.shape[1] >= 2:
             probs = torch.softmax(logits, dim=1)
             scores = probs[:, 1]
             labels = (scores >= 0.5).long()
         else:
-            scores = torch.sigmoid(logits.squeeze())
+            scores = torch.sigmoid(logits.view(-1))
             labels = (scores >= 0.5).long()
         return labels, scores
 
@@ -269,8 +273,9 @@ def compute_class_weights(graphs: list[Data]) -> torch.Tensor:
     if not label_tensors:
         return torch.ones(2)  # fallback: equal weights
     all_labels = torch.cat(label_tensors).long()
-    classes = torch.unique(all_labels)
-    counts = torch.bincount(all_labels, minlength=int(classes.max()) + 1).float()
+    num_classes = max(int(all_labels.max()) + 1, 2)  # at least 2 classes
+    counts = torch.bincount(all_labels, minlength=num_classes).float()
     counts[counts == 0] = 1.0  # avoid division by zero
-    weights = counts.sum() / (len(classes) * counts)
+    present = (counts > 0).sum().item()
+    weights = counts.sum() / (present * counts)
     return weights

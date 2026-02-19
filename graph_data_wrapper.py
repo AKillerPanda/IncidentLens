@@ -99,6 +99,11 @@ def _aggregate_flows_numpy(
         std_iat, flow_label) all length F (number of unique flows).
     """
     n = len(win_ids)
+    if n == 0:
+        empty = np.array([], dtype=np.int64)
+        empty_f = np.array([], dtype=np.float32)
+        return (empty, empty, empty, empty, empty,
+                empty_f, empty_f, empty_f, empty_f, empty_f, empty)
 
     # Encode 5 groupby keys into a single int64 composite key for fast sort.
     # Bit allocation: win(16) | src(16) | dst(16) | proto(8) | port(8) = 64 bits.
@@ -383,7 +388,7 @@ def build_sliding_window_graphs(
         data = Data(edge_index=ei, x=node_feats, num_nodes=n_local)
         data.edge_attr = torch.from_numpy(feat_arr[idx])
         data.y = torch.from_numpy(label_arr[idx])
-        data.window_start = float(window_starts[w])
+        data.window_start = float(window_starts[w]) if w < len(window_starts) else 0.0
         data.network = net
         graphs.append(data)
 
