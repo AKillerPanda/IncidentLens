@@ -35,7 +35,10 @@ Data is fetched from the live FastAPI backend via typed hooks. If the backend is
 | **State** | React hooks (`hooks/useApi.ts`) — live backend with mock fallback |
 | **Icons** | lucide-react |
 | **Date formatting** | date-fns |
+| **Toasts** | sonner (`<Toaster />` in `App.tsx`) |
 | **Animations** | tw-animate-css |
+| **Charts** | recharts |
+| **shadcn/ui transitive deps** | cmdk, embla-carousel-react, input-otp, react-day-picker, react-hook-form, react-resizable-panels, vaul |
 
 ---
 
@@ -91,6 +94,8 @@ A 4-step wizard with a progress bar and clickable step navigation. Uses 4 hooks 
 | **2. Log Analysis** | `ElasticsearchStep` | ES query DSL display, hit count, log entries with color-coded severity levels (CRITICAL/ERROR/WARNING/INFO) |
 | **3. Network Graph** | `GNNStep` | Interactive D3 force-directed graph — nodes colored by status (compromised/suspicious/normal), edges flagged as anomalous, risk scores. Risk assessment table for top 5 nodes. |
 | **4. Explainability** | `CounterfactualStep` | Side-by-side scenario comparison (current vs counterfactual), per-parameter impact analysis with progress bars, AI-generated insights, recommended actions |
+
+> **Note:** The "AI-Generated Insights" and "Recommended Actions" sections in `CounterfactualStep.tsx` are **currently hardcoded static text**, not driven by per-incident backend data. A future iteration should populate these from the agent’s conclusion.
 
 ---
 
@@ -158,6 +163,13 @@ interface NetworkEdge {
   anomalous: boolean;
 }
 
+interface CounterfactualChange {
+  parameter: string;
+  original: string;
+  modified: string;
+  impact: number;
+}
+
 interface ElasticsearchData {
   totalHits: number;
   logs: Array<{ timestamp: string; source: string; message: string; level: string }>;
@@ -192,9 +204,10 @@ interface BackendFlow {
   packet_count?: number;  total_bytes?: number;
   mean_payload?: number;  mean_iat?: number;  std_iat?: number;
   prediction?: number;    prediction_score?: number;
+  [key: string]: unknown;   // forward-compatible index signature
 }
 
-interface BackendDetectResponse { method: string; count: number; flows: BackendFlow[]; }
+interface BackendDetectResponse { method: string; count: number; flows: BackendFlow[]; threshold?: number; }
 interface BackendFlowsResponse  { count: number; flows: BackendFlow[]; }
 interface BackendCounterfactualResponse { flow_id: string; anomalous_flow: Record<string, unknown>; nearest_normal: Record<string, unknown>; diffs: Array<{feature: string; anomalous_value: number; normal_value: number; abs_diff: number; direction: string}>; }
 interface BackendSeverityResponse { flow_id: string; severity: string; z_scores: Record<string, number>; max_z: number; }
@@ -203,6 +216,11 @@ interface BackendHealthResponse  { server: string; elasticsearch: string; indice
 // WebSocket events (backend also emits 'status' — frontend silently ignores it)
 type InvestigationEventType = 'thinking' | 'tool_call' | 'tool_result' | 'conclusion' | 'error' | 'done';
 interface InvestigationEvent { type: InvestigationEventType; content?: string; tool?: string; arguments?: Record<string, unknown>; result?: string; }
+```
+
+> **Field-name note:** The backend’s `wrappers.py` stores counterfactual diffs as `feature_diffs` with `original_value` / `cf_value` keys. The `POST /api/counterfactual` endpoint reshapes these into the frontend’s `diffs` array with `anomalous_value` / `normal_value` keys. If you query ES directly, the field names will differ.
+
+> **Type duplication warning:** `data/mockData.ts` re-declares `Incident`, `NetworkNode`, `NetworkEdge`, and `CounterfactualExplanation`. Two step components (`GNNStep.tsx`, `CounterfactualStep.tsx`) currently import from `mockData.ts` instead of `types.ts`. Keep both files in sync or consolidate imports.
 ```
 
 ---
@@ -235,7 +253,7 @@ for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
 
 ## React Hooks
 
-`app/hooks/useApi.ts` — Built on a generic `useAsync<T>` hook. Each returns `{ data, loading, error, refetch }`.
+`app/hooks/useApi.ts` — Built on a generic `useAsync<T>` hook that manages `{ data, loading, error, refetch }` state. Each public hook wraps a specific API call:
 
 | Hook | Data Source | Fallback | Returns |
 |:-----|:-----------|:---------|:--------|
@@ -249,6 +267,16 @@ for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
 | `useInvestigationStream()` | `WS /ws/investigate` | — | `{events, running, error, start, stop}` |
 
 **Mock fallback pattern:** Every data hook wraps its API call in `try/catch`. If the backend is unreachable, it falls back to the mock data in `data/mockData.ts`. This enables full offline UI development.
+
+### Helper Functions
+
+Three non-hook functions are also defined in `useApi.ts` for data transformation:
+
+| Function | Purpose |
+|:---------|:--------|
+| `flowToIncident(flow, index)` | Convert a `BackendFlow` to a frontend `Incident` |
+| `flowsToGraph(flows)` | Convert `BackendFlow[]` to `NetworkGraphData` (nodes + edges) |
+| `backendCfToFrontend(cf)` | Convert `BackendCounterfactualResponse` to `CounterfactualExplanation` |
 
 ---
 
@@ -327,7 +355,7 @@ Browser (:5173)                    Vite Dev Server                    FastAPI (:
 
 **Development:** Run both `npm run dev` (frontend on `:5173`) and `python src/Backend/main.py serve` (backend on `:8000`). The Vite proxy forwards all API requests transparently.
 
-**Production:** `npm run build` outputs a static `dist/` directory. Serve it from the FastAPI server or any static host; update API URLs accordingly.
+**Production:** `npm run build` outputs a static `dist/` directory. Serve it from any static host (e.g., Nginx, Vercel, or a CDN); the FastAPI server does **not** mount static files. Update API URLs to point to your backend.
 
 ---
 

@@ -168,7 +168,9 @@ npm install
 npm run dev          # → http://localhost:5173
 ```
 
-The Vite dev server proxies `/api` and `/ws` requests to the backend at `localhost:8000`, so both servers can run simultaneously in development. In production, build the frontend with `npm run build` and serve the `dist/` output alongside the API.
+The Vite dev server proxies `/api` and `/ws` requests to the backend at `localhost:8000`, so both servers can run simultaneously in development. In production, build the frontend with `npm run build` and serve the resulting `dist/` directory from any static host (e.g., Nginx, Vercel, or a CDN). The FastAPI server does **not** serve static files — you need a separate static host or a reverse proxy.
+
+> **Note:** `.gitignore` excludes `*.csv` files, so raw datasets must be distributed separately.
 
 ---
 
@@ -178,7 +180,7 @@ The Vite dev server proxies `/api` and `/ws` requests to the backend at `localho
 IncidentLens/
 ├── src/
 │   ├── Backend/                        # Python backend
-│   │   ├── main.py                     # CLI shim → delegates to testingentry
+│   │   ├── main.py                     # CLI shim → imports from tests/testingentry.py
 │   │   ├── agent.py                    # LLM agent — multi-step reasoning loop
 │   │   ├── agent_tools.py              # 15 tools with OpenAI function-calling schemas
 │   │   ├── server.py                   # FastAPI server (REST + WebSocket + Incident API)
@@ -191,13 +193,17 @@ IncidentLens/
 │   │   ├── ingest_pipeline.py          # 8-step data ingestion pipeline
 │   │   ├── csv_to_json.py              # CSV → NDJSON converter
 │   │   ├── GNN.py                      # (Deprecated) standalone EdgeGNN ref
-│   │   ├── testingentry.py             # (Legacy duplicate — canonical copy in tests/)
+│   │   ├── __init__.py
+│   │   ├── backup/                     # Earlier model versions kept for reference
+│   │   │   ├── temporal_gnn_v1_backup.py
+│   │   │   └── __init__.py
 │   │   └── tests/                      # 166 tests (100% pass)
 │   │       ├── testingentry.py         # Actual CLI implementation (5 commands)
 │   │       ├── test_gnn_edge_cases.py
 │   │       ├── test_temporal_gnn_full.py
 │   │       ├── test_temporal_gnn_meticulous.py
-│   │       └── run_all.py              # Test suite runner
+│   │       ├── run_all.py              # Test suite runner
+│   │       └── __init__.py
 │   ├── Front/                          # React frontend
 │   │   ├── package.json                 # Dependencies + scripts (dev, build, preview)
 │   │   ├── vite.config.ts               # Vite 6 + proxy (/api → :8000, /ws → :8000)
@@ -219,12 +225,16 @@ IncidentLens/
 │   │   │   │   │   └── CounterfactualStep.tsx # Explainability
 │   │   │   │   └── ui/                  # 46 shadcn/ui components + utilities
 │   │   │   └── data/mockData.ts         # Mock data for offline fallback
-│   │   └── styles/                      # Tailwind v4 + oklch theme tokens
+│   │   ├── styles/                      # Tailwind v4 + oklch theme tokens
+│   │   ├── vite-env.d.ts                # Vite type references
+│   │   └── __init__.py
 │   └── docker-compose.yml               # ES 8.12 + Kibana 8.12
+├── .gitignore                           # Ignores .venv, __pycache__, dist/, node_modules/, *.csv
 ├── data/                                # NDJSON data files
-├── EDA/                                 # Exploratory analysis notebooks
-├── requirements.txt
-└── LICENSE
+├── EDA/                                 # Exploratory data analysis (Jupyter notebooks)
+│   └── EDA.ipynb                        # Dataset profiling and visualization
+├── requirements.txt                     # Python dependencies (pip install -r)
+└── LICENSE                              # MIT
 ```
 
 ---
@@ -292,6 +302,8 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 | `incidentlens-counterfactuals` | Counterfactual diffs — per-feature original vs CF value, direction, percent change |
 | `incidentlens-packets` | Raw individual packet records from the dataset |
 
+> Four 4th index (`incidentlens-packets`) is created and populated by `ingest_pipeline.py`. The mapping includes: `packet_index`, `timestamp`, `inter_arrival_time`, `src_ip`, `dst_ip`, `src_port`, `dst_port`, `protocol`, `ttl`, `ip_header_len`, `tcp_flags`, `udp_length`, `payload_length`, `packet_length`, `label`.
+
 ---
 
 ## Technical Highlights
@@ -301,7 +313,7 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 - **Pre-processed GNN bottleneck removal** — Self-loops and degree normalization cached at data-prep time; LSTM weight evolution flattened from O(hidden_dim) batches to O(1).
 - **Singleton ES client** with retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead.
 - **166 tests** covering graph construction, GNN forward/backward passes, temporal sequences, normalization, and edge-case handling — all passing.
-- **Full-stack integration** — Typed API service layer (`services/api.ts`) with 10+ typed fetch functions, WebSocket async-generator streaming client, and 8 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`) that try the live backend first and fall back to mock data for offline development.
+- **Full-stack integration** — Typed API service layer (`services/api.ts`) with 9 typed fetch functions, WebSocket async-generator streaming client, and 8 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`) that try the live backend first and fall back to mock data for offline development.
 - **Zero-config dev proxy** — Vite dev server on `:5173` proxies `/api` and `/ws` to the FastAPI backend on `:8000`, so frontend and backend can be developed and run simultaneously with no CORS issues.
 
 ---
