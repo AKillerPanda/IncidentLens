@@ -40,12 +40,12 @@ The agent doesn't just say "this is malicious" — it says *"this flow has 47x t
 
 ## Key Features
 
-- **Autonomous Multi-Step Investigation** — An LLM agent with 15 specialized tools iterates through detection → analysis → explanation → severity assessment → recommendation, streaming each reasoning step in real time
+- **Autonomous Multi-Step Investigation** — An LLM agent with 19 specialized tools iterates through detection → analysis → explanation → severity assessment → recommendation, streaming each reasoning step in real time
 - **Temporal Graph Construction** — Sliding-window graph builder converts raw packets into PyG `Data` objects with node features (degree, traffic volume) and edge features (packet count, bytes, payload, inter-arrival time)
 - **Dual GNN Architecture** — EdgeGNN (GraphSAGE + Edge MLP) for static classification and EvolveGCN-O (LSTM-evolved weights) for capturing temporal attack patterns
 - **Counterfactual Analysis** — Feature-level diffs ("what would need to change?") and graph-level edge perturbation ("which connections drive the anomaly?")
 - **Real-Time WebSocket Streaming** — Every thinking step, tool call, and conclusion is streamed to the frontend as it happens
-- **Interactive Investigation Dashboard** — React 19 + Vite 6 frontend with a 4-step guided wizard (Overview → ES Logs → Network Graph → Counterfactual Explainability), shadcn/ui components, Tailwind v4 dark theme, and typed API hooks that fall back to mock data when the backend is offline
+- **Interactive Investigation Dashboard** — React 19 + Vite 6 frontend with a 4-step guided wizard (Overview → ES Logs → Network Graph → Counterfactual Explainability), shadcn/ui components, Tailwind v4 dark theme, 12 typed React hooks with mock fallback, and 20 typed API functions
 - **Kitsune Dataset Validated** — Tested on 4M+ real SSDP flood attack packets with ground-truth labels
 
 ---
@@ -179,14 +179,14 @@ The Vite dev server proxies `/api` and `/ws` requests to the backend at `localho
 ```
 IncidentLens/
 ├── src/
-│   ├── Backend/                        # Python backend
+│   ├── Backend/                        # Python backend (1 933-line ES wrapper, 831-line agent)
 │   │   ├── main.py                     # CLI shim → imports from tests/testingentry.py
 │   │   ├── agent.py                    # LLM agent — multi-step reasoning loop
-│   │   ├── agent_tools.py              # 15 tools with OpenAI function-calling schemas
-│   │   ├── server.py                   # FastAPI server (REST + WebSocket + Incident API)
-│   │   ├── wrappers.py                 # ES client, indexing, kNN, counterfactuals
-│   │   ├── graph_data_wrapper.py       # Vectorised sliding-window graph builder
-│   │   ├── graph.py                    # Core graph data structures
+│   │   ├── agent_tools.py              # 19 tools with OpenAI function-calling schemas
+│   │   ├── server.py                   # FastAPI server (21 REST + 1 WS endpoint)
+│   │   ├── wrappers.py                 # ES client — 53 functions: indexing, kNN, ILM, runtime fields, pagination
+│   │   ├── graph_data_wrapper.py       # Vectorised sliding-window graph builder (numpy)
+│   │   ├── graph.py                    # Core graph data structures (numpy-vectorised)
 │   │   ├── train.py                    # EdgeGNN (GraphSAGE) training pipeline
 │   │   ├── temporal_gnn.py             # EvolveGCN-O semi-temporal model
 │   │   ├── gnn_interface.py            # Abstract GNN encoder contract
@@ -258,6 +258,13 @@ IncidentLens/
 | `GET` | `/api/incidents/{id}` | Single incident detail by flow ID |
 | `GET` | `/api/incidents/{id}/graph` | Network graph (nodes + edges) scoped to incident IPs for D3 visualization |
 | `GET` | `/api/incidents/{id}/logs` | ES-style log entries scoped to incident IPs for log viewer |
+| `GET` | `/api/severity-breakdown` | Runtime-field severity distribution across all flows |
+| `GET` | `/api/flows/severity` | Query flows filtered by runtime severity level |
+| `POST` | `/api/flows/search` | Paginated flow search (search_after + PIT) |
+| `GET` | `/api/counterfactuals/search` | Full-text search over counterfactual narratives |
+| `GET` | `/api/aggregate/{field}` | Composite aggregation with cursor-based pagination |
+| `GET` | `/api/ml/anomalies` | ES ML anomaly detection records |
+| `GET` | `/api/ml/influencers` | ES ML top influencer results |
 
 ### WebSocket
 
@@ -271,7 +278,7 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 
 ---
 
-## Agent Tools (15)
+## Agent Tools (19)
 
 | Tool | Purpose |
 |:-----|:--------|
@@ -287,9 +294,13 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 | `explain_flow` | ES `_explain` API — why a flow matched a query |
 | `search_raw_packets` | Search individual raw packet records |
 | `find_similar_incidents` | kNN embedding search for historical matches |
-| `assess_severity` | Z-score severity assessment (low / medium / high) |
 | `graph_edge_counterfactual` | Identify which edges (connections) drive the anomaly |
 | `graph_window_comparison` | Compare normal vs anomalous time windows structurally |
+| `get_ml_anomaly_records` | Fetch records from ES ML anomaly detection jobs |
+| `get_ml_influencers` | Get top influencers from ES ML anomaly jobs |
+| `severity_breakdown` | Runtime-field severity distribution across all flows |
+| `search_counterfactuals` | Full-text search over counterfactual narratives |
+| `assess_severity` | Z-score severity assessment (low / medium / high) |
 
 ---
 
@@ -308,12 +319,14 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 
 ## Technical Highlights
 
-- **Vectorized graph construction** — Pure numpy sliding-window builder with composite key packing, broadcast window assignment, and pre-built neighbor lists. Zero Python for-loops over packets.
+- **Vectorized graph construction** — Pure numpy sliding-window builder with composite key packing, broadcast window assignment, and pre-built neighbor lists. Zero Python for-loops over packets. `build_edge_index()` uses pre-allocated numpy arrays; `build_window_data()` uses `argsort`+`searchsorted` for window splitting.
+- **Vectorized analysis** — Edge perturbation counterfactuals use batch `(T,F)` matrix ops and sum-of-squares update formulas instead of per-edge recomputation. Window comparison, anomalous/normal window finding, and severity z-scores all use numpy vectorized operations.
 - **Dual GNN models** — EdgeGNN (GraphSAGE + Edge MLP) for static edge classification; EvolveGCN-O (LSTM-evolved GCN weights) for temporal pattern detection across graph sequences.
 - **Pre-processed GNN bottleneck removal** — Self-loops and degree normalization cached at data-prep time; LSTM weight evolution flattened from O(hidden_dim) batches to O(1).
+- **ES-native analytics** — Runtime severity fields (Painless scripts), ILM lifecycle policies, ingest pipelines for NaN cleanup, index templates, composite aggregations with cursor pagination, search_after + PIT pagination, and full-text counterfactual narrative search.
 - **Singleton ES client** with retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead.
 - **166 tests** covering graph construction, GNN forward/backward passes, temporal sequences, normalization, and edge-case handling — all passing.
-- **Full-stack integration** — Typed API service layer (`services/api.ts`) with 9 typed fetch functions, WebSocket async-generator streaming client, and 8 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`) that try the live backend first and fall back to mock data for offline development. Incident-scoped hooks (`useElasticsearchData`, `useNetworkGraph`) call the `/api/incidents/{id}/logs` and `/api/incidents/{id}/graph` endpoints directly for per-incident data.
+- **Full-stack integration** — Typed API service layer (`services/api.ts`) with 20 typed functions (19 REST + 1 WebSocket async-generator), and 12 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`, `useSeverityBreakdown`, `useMLAnomalies`, `useMLInfluencers`, `useCounterfactualSearch`) that try the live backend first and fall back to mock data for offline development.
 - **Zero-config dev proxy** — Vite dev server on `:5173` proxies `/api` and `/ws` to the FastAPI backend on `:8000`, so frontend and backend can be developed and run simultaneously with no CORS issues.
 
 ---

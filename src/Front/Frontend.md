@@ -31,8 +31,8 @@ Data is fetched from the live FastAPI backend via typed hooks. If the backend is
 | **Styling** | Tailwind CSS v4 (oklch design tokens, `@source` directive) |
 | **Components** | shadcn/ui (Card, Badge, Button, Tabs, Progress, etc.) |
 | **Visualization** | D3.js force-directed graph (interactive, drag-enabled) |
-| **API layer** | Typed fetch client (`services/api.ts`) + WebSocket async-generator |
-| **State** | React hooks (`hooks/useApi.ts`) — live backend with mock fallback |
+| **API layer** | Typed fetch client (`services/api.ts`) + WebSocket async-generator (20 typed functions) |
+| **State** | React hooks (`hooks/useApi.ts`) — 12 hooks: live backend with mock fallback |
 | **Icons** | lucide-react |
 | **Date formatting** | date-fns |
 | **Toasts** | sonner (`<Toaster />` in `App.tsx`) |
@@ -214,8 +214,20 @@ interface BackendSeverityResponse { flow_id: string; severity: string; z_scores:
 interface BackendHealthResponse  { server: string; elasticsearch: string; indices?: Record<string, boolean>; error?: string; }
 
 // WebSocket events (backend also emits 'status' — frontend silently ignores it)
-type InvestigationEventType = 'thinking' | 'tool_call' | 'tool_result' | 'conclusion' | 'error' | 'done';
+type InvestigationEventType = 'thinking' | 'tool_call' | 'tool_result' | 'conclusion' | 'status' | 'error' | 'done';
 interface InvestigationEvent { type: InvestigationEventType; content?: string; tool?: string; arguments?: Record<string, unknown>; result?: string; }
+
+// ES-native analytics types (Phase 20)
+interface SeverityBreakdownResponse { buckets: Array<{key: string; doc_count: number; avg_score?: {value: number}}>; }
+interface PaginatedFlowsResponse { total: number; flows: BackendFlow[]; pit_id?: string; search_after?: unknown[]; }
+interface CounterfactualSearchResult { _id: string; _score: number; _source: Record<string, unknown>; highlight?: Record<string, string[]>; }
+interface CounterfactualSearchResponse { total: number; results: CounterfactualSearchResult[]; }
+interface MLAnomalyRecord { job_id: string; record_score: number; bucket_span: number; detector_index: number; timestamp: number; [key: string]: unknown; }
+interface MLAnomaliesResponse { count: number; records: MLAnomalyRecord[]; }
+interface MLInfluencer { job_id: string; influencer_field_name: string; influencer_field_value: string; influencer_score: number; [key: string]: unknown; }
+interface MLInfluencersResponse { count: number; influencers: MLInfluencer[]; }
+interface AggregationBucket { key: Record<string, string>; doc_count: number; }
+interface AggregationResponse { buckets: AggregationBucket[]; after_key?: Record<string, string>; }
 ```
 
 > **Field-name note:** The backend’s `wrappers.py` stores counterfactual diffs as `feature_diffs` with `original_value` / `cf_value` keys. The `POST /api/counterfactual` endpoint reshapes these into the frontend’s `diffs` array with `anomalous_value` / `normal_value` keys. If you query ES directly, the field names will differ.
@@ -236,9 +248,20 @@ interface InvestigationEvent { type: InvestigationEventType; content?: string; t
 | `detectAnomalies(params?)` | `POST /api/detect` | `BackendDetectResponse` |
 | `getFlowSeverity(flowId)` | `GET /api/severity/:id` | `BackendSeverityResponse` |
 | `getFlowCounterfactual(flowId)` | `POST /api/counterfactual` | `BackendCounterfactualResponse` |
-| `getSimilarIncidents(flowId, k?)` | `GET /api/similar/:id` | `{flow_id, similar}` |
+| `getSimilarIncidents(flowId, k?)` | `GET /api/similar/:id` | `{query_flow, similar}` |
 | `getFeatureStats()` | `GET /api/stats` | `Record<string, unknown>` |
 | `investigate(query)` | `POST /api/investigate` | `{events: InvestigationEvent[]}` |
+| `listIncidents()` | `GET /api/incidents` | `Incident[]` |
+| `getIncident(id)` | `GET /api/incidents/:id` | `Incident` |
+| `getIncidentGraph(id)` | `GET /api/incidents/:id/graph` | `NetworkGraphData` |
+| `getIncidentLogs(id)` | `GET /api/incidents/:id/logs` | `ElasticsearchData` |
+| `getSeverityBreakdown()` | `GET /api/severity-breakdown` | `SeverityBreakdownResponse` |
+| `getFlowsBySeverity(level, size?)` | `GET /api/flows/severity` | `PaginatedFlowsResponse` |
+| `searchFlowsPaginated(params)` | `POST /api/flows/search` | `PaginatedFlowsResponse` |
+| `searchCounterfactuals(query, size?)` | `GET /api/counterfactuals/search` | `CounterfactualSearchResponse` |
+| `getAggregation(field, size?)` | `GET /api/aggregate/:field` | `AggregationResponse` |
+| `getMLAnomalies(jobId?, minScore?)` | `GET /api/ml/anomalies` | `MLAnomaliesResponse` |
+| `getMLInfluencers(jobId?, minScore?)` | `GET /api/ml/influencers` | `MLInfluencersResponse` |
 | `investigateStream(query, signal?)` | `WS /ws/investigate` | `AsyncGenerator<InvestigationEvent>` |
 
 `investigateStream()` is a WebSocket **async generator** — use it with `for await...of`. It includes JSON parse error handling, properly restores the `onerror` handler after connection succeeds, and closes the WebSocket after receiving a `\"done\"` event:
@@ -258,13 +281,17 @@ for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
 | Hook | Data Source | Fallback | Returns |
 |:-----|:-----------|:---------|:--------|
 | `useBackendHealth()` | `GET /health` | — | `BackendHealthResponse` |
-| `useIncidents()` | `POST /api/detect` → map to `Incident[]` | `mockIncidents` | `Incident[]` |
-| `useIncident(id)` | `POST /api/detect` → find by `_id` | `mockIncidents` lookup | `Incident \| null` |
+| `useIncidents()` | `GET /api/incidents` | `mockIncidents` | `Incident[]` |
+| `useIncident(id)` | `GET /api/incidents/:id` | `mockIncidents` lookup | `Incident \| null` |
 | `useElasticsearchData(id)` | `GET /api/incidents/{id}/logs` | `mockElasticsearchResults` | `ElasticsearchData \| null` |
 | `useNetworkGraph(id)` | `GET /api/incidents/{id}/graph` | `mockNetworkGraph` | `NetworkGraphData \| null` |
 | `useCounterfactual(id)` | `POST /api/counterfactual` → `backendCfToFrontend()` | `mockCounterfactuals` | `CounterfactualExplanation \| null` |
 | `useSeverity(flowId)` | `GET /api/severity/:id` | `null` | `BackendSeverityResponse \| null` |
 | `useInvestigationStream()` | `WS /ws/investigate` | — | `{events, running, error, start, stop}` |
+| `useSeverityBreakdown()` | `GET /api/severity-breakdown` | — | `SeverityBreakdownResponse \| null` |
+| `useMLAnomalies(jobId?, minScore?)` | `GET /api/ml/anomalies` | — | `MLAnomaliesResponse \| null` |
+| `useMLInfluencers(jobId?, minScore?)` | `GET /api/ml/influencers` | — | `MLInfluencersResponse \| null` |
+| `useCounterfactualSearch(query)` | `GET /api/counterfactuals/search` | — | `CounterfactualSearchResponse \| null` |
 
 > **Cleanup:** `useInvestigationStream` aborts the WebSocket connection on component unmount via a `useEffect` cleanup function.
 
@@ -272,11 +299,10 @@ for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
 
 ### Helper Functions
 
-Three non-hook functions are also defined in `useApi.ts` for data transformation:
+Two non-hook functions are also defined in `useApi.ts` for data transformation:
 
 | Function | Purpose |
 |:---------|:--------|
-| `flowToIncident(flow, index)` | Convert a `BackendFlow` to a frontend `Incident` |
 | `flowsToGraph(flows)` | Convert `BackendFlow[]` to `NetworkGraphData` (nodes + edges) |
 | `backendCfToFrontend(cf)` | Convert `BackendCounterfactualResponse` to `CounterfactualExplanation` (uses `\"N/A\"` fallback for missing values) |
 

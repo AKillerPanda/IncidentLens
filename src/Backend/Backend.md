@@ -11,11 +11,11 @@ Developer reference for the Python backend powering IncidentLens.
 | **main.py** | CLI shim — imports `main()` from `tests/testingentry.py` (ensures `src.Backend.*` path resolution) |
 | **tests/testingentry.py** | Actual CLI implementation — `health`, `ingest`, `investigate`, `serve`, `convert` |
 | **agent.py** | LLM agent orchestrator: multi-step reasoning loop with OpenAI tool-calling. After processing tool calls the loop continues automatically (no redundant `finish_reason` check) |
-| **agent_tools.py** | 15 tools exposed to the agent (ES queries, counterfactuals, severity, graph analysis). Includes `_STATS_CACHE` (30 s TTL), `_GRAPH_CACHE`, `set_graph_cache()`, and `_sanitize_for_json()` helper (handles `np.bool_`, `np.integer`, `np.floating`, NaN/Inf). Validates window indices with negative-value rejection |
-| **server.py** | FastAPI server (v0.1.0) — REST endpoints with proper HTTP error codes (502 for backend failures, 404 for missing resources), incident convenience API, WebSocket streaming. Also runnable directly via `python server.py` (`if __name__` block uses `src.Backend.server:app` import path) |
-| **wrappers.py** | Singleton ES client, index management, bulk flow/embedding ingestion, kNN search, counterfactual diff, ML jobs. `generate_embeddings()` auto-corrects `embedding_dim` to match actual GNN output dimensions |
-| **graph_data_wrapper.py** | Vectorised sliding-window graph builder — pure numpy, zero Python for-loops over packets |
-| **graph.py** | Core graph data structures (`node`, `network`), snapshot dataset builder |
+| **agent_tools.py** | 19 tools exposed to the agent (ES queries, counterfactuals, severity, graph analysis, ML anomalies, severity breakdown, CF search). Includes `_STATS_CACHE` (30 s TTL), `_GRAPH_CACHE`, `set_graph_cache()`, and `_sanitize_for_json()` helper (handles `np.bool_`, `np.integer`, `np.floating`, NaN/Inf). Validates window indices with negative-value rejection. Severity z-score computation fully numpy-vectorised |
+| **server.py** | FastAPI server (v0.1.0) — 21 REST endpoints + 1 WebSocket. Includes 7 ES-native analytics endpoints (severity breakdown, runtime severity search, paginated search, CF text search, composite aggregation, ML anomalies, ML influencers). Proper HTTP error codes (502/404). Uses `asyncio.to_thread` for non-blocking ES calls. Also runnable directly via `python server.py` (`if __name__` block uses `src.Backend.server:app` import path) |
+| **wrappers.py** | Singleton ES client (1 933 lines, 53 functions). Index management, bulk flow/embedding ingestion, kNN search, counterfactual diff, ML jobs. New ES-native features: ILM policies, ingest pipelines (NaN cleanup), index templates, runtime severity fields (Painless), search_after + PIT pagination, composite aggregations, full-text CF search. `generate_embeddings()` auto-corrects `embedding_dim` to match actual GNN output dimensions |
+| **graph_data_wrapper.py** | Vectorised sliding-window graph builder — pure numpy, zero Python for-loops over packets. Counterfactual tools use batch `(T,F)` matrix ops and sum-of-squares update formulas. Window finding uses `np.argmax`/`np.argmin` |
+| **graph.py** | Core graph data structures (`node`, `network`), snapshot dataset builder. `build_edge_index()` uses numpy pre-allocated arrays. `build_window_data()` uses `argsort`+`searchsorted` for vectorised window splitting with `window_start` temporal field |
 | **train.py** | EdgeGNN (GraphSAGE + Edge MLP) training pipeline with class-imbalance handling |
 | **temporal_gnn.py** | EvolveGCN-O — semi-temporal GNN with LSTM-evolved weights for sequence-level detection. `recompute_node_features()` initialises zero-valued features when edge_attr is insufficient (instead of returning `x=None`) |
 | **gnn_interface.py** | `BaseGNNEncoder` abstract class — the contract any GNN must satisfy to plug into the pipeline |
@@ -159,20 +159,25 @@ Raw individual packet records from the dataset (`ingest_pipeline.py`).
 | `FEATURE_FIELDS` | wrappers.py | `["packet_count", "total_bytes", "mean_payload", "mean_iat", "std_iat"]` | Metric fields used for stats and analysis |
 | `RAW_PACKETS_INDEX` | ingest_pipeline.py | `"incidentlens-packets"` | Raw packets index name |
 | `DATA_DIR` | ingest_pipeline.py | `"data/"` | Default NDJSON data directory |
+| `ILM_POLICY_NAME` | wrappers.py | `"incidentlens-ilm-policy"` | Index lifecycle management policy |
+| `INGEST_PIPELINE_NAME` | wrappers.py | `"incidentlens-nan-cleanup"` | ES ingest pipeline for NaN/Inf cleanup |
+| `SEVERITY_RUNTIME_FIELDS` | wrappers.py | (Painless scripts) | Runtime fields: `severity_level`, `severity_score`, `traffic_volume_category` |
 
 ---
 
 ## Agent Tool Dispatch
 
-All 15 tools follow the OpenAI function-calling schema format. The LLM agent calls them via `agent_tools.dispatch(tool_name, args)`, which routes to the appropriate `wrappers.*` function.
+All 19 tools follow the OpenAI function-calling schema format. The LLM agent calls them via `agent_tools.dispatch(tool_name, args)`, which routes to the appropriate `wrappers.*` function.
 
 **Detection:** `es_health_check`, `detect_anomalies`, `search_flows`, `get_flow`, `search_raw_packets`
 
 **Analysis:** `feature_stats`, `feature_percentiles`, `significant_terms`, `find_similar_incidents`
 
-**Explainability:** `counterfactual_analysis`, `counterfactual_narrative`, `explain_flow`, `graph_edge_counterfactual`, `graph_window_comparison`
+**Explainability:** `counterfactual_analysis`, `counterfactual_narrative`, `explain_flow`, `graph_edge_counterfactual`, `graph_window_comparison`, `search_counterfactuals`
 
-**Assessment:** `assess_severity`
+**Assessment:** `assess_severity`, `severity_breakdown`
+
+**ML:** `get_ml_anomaly_records`, `get_ml_influencers`
 
 ---
 
@@ -191,8 +196,11 @@ class DetectRequest(BaseModel):
     threshold: float = 0.5
     size: int = 50
 
-class CounterfactualRequest(BaseModel):
-    flow_id: str
+class PaginatedSearchRequest(BaseModel):
+    query: str = ""                # text query or "" for match_all
+    size: int = 20
+    search_after: list | None = None
+    pit_id: str | None = None
 ```
 
 ### REST
@@ -212,6 +220,13 @@ class CounterfactualRequest(BaseModel):
 | `GET` | `/api/incidents/{id}` | Single incident detail by flow ID |
 | `GET` | `/api/incidents/{id}/graph` | Network graph scoped to incident IPs |
 | `GET` | `/api/incidents/{id}/logs` | ES-style log entries scoped to incident IPs |
+| `GET` | `/api/severity-breakdown` | Runtime-field severity distribution |
+| `GET` | `/api/flows/severity` | Query flows by runtime severity level |
+| `POST` | `/api/flows/search` | Paginated search (search_after + PIT) |
+| `GET` | `/api/counterfactuals/search` | Full-text search over CF narratives |
+| `GET` | `/api/aggregate/{field}` | Composite aggregation (paginated) |
+| `GET` | `/api/ml/anomalies` | ES ML anomaly records |
+| `GET` | `/api/ml/influencers` | ES ML influencer results |
 
 > **Error handling:** All REST endpoints check for `"error"` in the tool response and return HTTP 502 (backend error) or 404 (not found) instead of 200 with an error body.
 
@@ -331,14 +346,17 @@ The agent is instantiated as a **singleton** (`IncidentAgent`) and reused across
 1. **Edge-level embeddings** — GNNs produce node embeddings; we concatenate `[node_emb[src], node_emb[dst]]` to get per-flow embeddings for kNN counterfactual retrieval.
 2. **Singleton ES client** — Reused across all requests; matches Elasticsearch SDK best practices.
 3. **Pre-processed GNN inputs** — Self-loops, degree normalization, and NaN sanitization happen *once* at data-prep time, not in every forward pass.
-4. **Numpy-first graph building** — `graph_data_wrapper` uses composite key packing, `np.add.at`, and `searchsorted` for window assignment — no Python loops over packets.
-5. **Graceful mock fallback** — Frontend hooks silently fall back to mock data when the backend is unreachable, enabling offline UI development.
+4. **Numpy-first graph building** — `graph_data_wrapper` uses composite key packing, `np.add.at`, and `searchsorted` for window assignment — no Python loops over packets. `graph.py` uses pre-allocated numpy arrays for edge indices and `argsort`+`searchsorted` for window splitting.
+5. **Vectorized analysis paths** — Edge perturbation counterfactuals use batch `(T,F)` matrix ops with sum-of-squares update formulas. Window comparison, anomalous/normal finding, and severity z-scores all use vectorized numpy.
+6. **Graceful mock fallback** — Frontend hooks silently fall back to mock data when the backend is unreachable, enabling offline UI development.
+7. **ES-native analytics** — Runtime severity fields (Painless), ILM policies, ingest pipelines, index templates, composite aggregations, PIT-based pagination, and full-text CF search — leveraging ES capabilities directly rather than application-level reimplementations.
+8. **Async server** — All ES calls in `server.py` are wrapped in `asyncio.to_thread()` for non-blocking request handling.
 
 ---
 
 ## Module Deep Dives
 
-### wrappers.py (1 484 lines, 44 functions)
+### wrappers.py (1 933 lines, 53 functions)
 
 Key exported functions beyond the module-map summary:
 
@@ -347,6 +365,9 @@ Key exported functions beyond the module-map summary:
 | `get_client(url)` | Return (or create) a singleton ES client |
 | `set_gnn_encoder()` / `get_gnn_encoder()` | Register / retrieve the active GNN model in a global registry |
 | `ping()` | Simple ES connectivity check |
+| `setup_ilm_policy()` | Create ILM lifecycle policy for index rollover |
+| `setup_ingest_pipeline()` | Create ES ingest pipeline for NaN/Inf cleanup |
+| `setup_index_templates()` | Create index templates for consistent mappings |
 | `create_index()` / `setup_all_indices()` / `delete_all_indices()` | Index lifecycle management |
 | `_flow_id()` / `_flow_ids_batch()` | Deterministic MD5 flow-ID generation |
 | `index_pyg_graph()` | Index a single PyG `Data` object into ES |
@@ -360,9 +381,18 @@ Key exported functions beyond the module-map summary:
 | `compute_counterfactual_diff()` | Feature-level diff between anomalous and nearest-normal flow |
 | `build_and_index_counterfactual()` | Compute and index a counterfactual into ES |
 | `feature_stats_by_label()` | Extended stats per feature grouped by label |
+| `feature_percentiles_by_label()` | Percentile distributions per feature |
 | `search_anomalous_flows()` | Search flows with `label=1` |
 | `get_counterfactuals_for_flow()` | Retrieve all counterfactuals for a flow |
 | `format_counterfactual_narrative()` | Generate human-readable CF explanation |
+| `significant_terms_by_label()` | IPs/protocols overrepresented in attack traffic |
+| `explain_flow_match()` | ES `_explain` API for query matching |
+| `search_flows_with_severity()` | Runtime-field severity search (Painless scripts) |
+| `aggregate_severity_breakdown()` | Runtime-field severity distribution |
+| `search_with_pagination()` | search_after + PIT cursor-based pagination |
+| `close_pit()` | Close a point-in-time |
+| `composite_aggregation()` | Paginated composite aggregation |
+| `full_text_search_counterfactuals()` | Full-text search over CF narratives with highlighting |
 | `_self_test()` | Self-test / smoke-test function |
 
 ### graph.py
