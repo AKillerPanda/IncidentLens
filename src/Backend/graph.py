@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch_geometric.data import Data
 from torch_geometric.utils import degree
 from typing import Optional
@@ -81,17 +82,25 @@ class network:
 	def build_edge_index(self) -> torch.Tensor:
 		if self._edge_index_cache is not None:
 			return self._edge_index_cache
-		src_list = []
-		dst_list = []
-		for n in self.nodes.values():
-			for dst_id in n.out_neighbors:
-				src_list.append(n.node_id)
-				dst_list.append(dst_id)
-		edge_index = torch.tensor([src_list, dst_list], dtype=torch.long, device=self.device)
+		# Vectorised: pre-allocate numpy arrays instead of growing Python lists
+		total = sum(len(n.out_neighbors) for n in self.nodes.values())
+		if total == 0:
+			edge_index = torch.zeros((2, 0), dtype=torch.long, device=self.device)
+		else:
+			src_arr = np.empty(total, dtype=np.int64)
+			dst_arr = np.empty(total, dtype=np.int64)
+			pos = 0
+			for n in self.nodes.values():
+				k = len(n.out_neighbors)
+				if k:
+					src_arr[pos:pos + k] = n.node_id
+					dst_arr[pos:pos + k] = n.out_neighbors
+					pos += k
+			edge_index = torch.from_numpy(np.stack([src_arr, dst_arr])).to(self.device)
 		self._edge_index_cache = edge_index
 		return edge_index
 
-    # for lathe grpahs larger graphs smaller grpahs this is inefficent
+    # For larger graphs this is inefficient; consider sparse operations
 	def build_sparse_adjacency(self) -> torch.Tensor:
 		edge_index = self.build_edge_index()
 		values = torch.ones(edge_index.size(1), device=self.device)
@@ -111,7 +120,7 @@ class network:
 	) -> "network":
 		g = cls(num_nodes=num_nodes, device=device)
 		for i in range(num_nodes):
-			g.add_node(node(IPaddress=f"", node_id=i, features=torch.zeros(1)))
+			g.add_node(node(IPaddress=f"node_{i}", node_id=i, features=torch.zeros(1)))
 		for src_id, dst_id in edges:
 			g.add_edge(src_id, dst_id)
 		return g
@@ -185,11 +194,12 @@ def build_flow_table(
 			f"{payload_col}_mean": "mean_payload_length",
 			"iat_mean": "mean_inter_arrival",
 			"iat_std": "std_inter_arrival",
-			f"{udp_len_col}_mean": "udp_length_mean" if udp_len_col else "udp_length_mean",
+			"udp_length_mean": "udp_length_mean",
 			"tcp_syn_mean": "tcp_flag_syn_rate",
-			f"{label_col}_max": "edge_label" if label_col else "edge_label",
 		}
 	)
+	if label_col and f"{label_col}_max" in grouped.columns:
+		grouped = grouped.rename(columns={f"{label_col}_max": "edge_label"})
 
 	if "std_inter_arrival" in grouped.columns:
 		grouped["std_inter_arrival"] = grouped["std_inter_arrival"].fillna(0.0)
@@ -214,34 +224,42 @@ def build_window_data(
 	feature_cols = [
 		"packet_count",
 		"total_bytes",
-		"mean_packet_size",
+		"mean_payload_length",
 		"mean_inter_arrival",
 		"std_inter_arrival",
-		"mean_payload_length",
-		"udp_length_mean",
-		"tcp_flag_syn_rate",
 	]
 
-	if "mean_packet_size" not in flows_df.columns and "total_bytes" in flows_df.columns:
-		flows_df = flows_df.copy()
-		flows_df["mean_packet_size"] = flows_df["total_bytes"] / flows_df["packet_count"].clip(lower=1)
+	n_nodes = len(node_map)
+
+	# Pre-map IPs → integer codes ONCE (avoids per-window .map() overhead)
+	src_codes = flows_df[src_col].map(node_map).astype(np.int64).values
+	dst_codes = flows_df[dst_col].map(node_map).astype(np.int64).values
+	feat_arr = flows_df[feature_cols].to_numpy(dtype=np.float32)
+	label_arr = flows_df["edge_label"].to_numpy(dtype=np.float32)
+	wid_arr = flows_df["window_id"].values
+
+	# Vectorised split: sort by window_id + searchsorted boundaries
+	order = np.argsort(wid_arr, kind="mergesort")
+	wid_sorted = wid_arr[order]
+	unique_wids, first_idx = np.unique(wid_sorted, return_index=True)
+	splits = np.append(first_idx, len(wid_sorted))
 
 	data_list = []
-	for window_id, window_df in flows_df.groupby("window_id"):
-		src_ids = window_df[src_col].map(node_map).astype(int).to_numpy()
-		dst_ids = window_df[dst_col].map(node_map).astype(int).to_numpy()
-		edge_index = torch.tensor([src_ids, dst_ids], dtype=torch.long)
-        #edge_index = torch.from_numpy(np.array([src_ids, dst_ids])).long() # alternative depending on speed
-		edge_attr = torch.tensor(window_df[feature_cols].to_numpy(), dtype=torch.float)
-		y_edge = torch.tensor(window_df["edge_label"].to_numpy(), dtype=torch.float)
+	for i, wid in enumerate(unique_wids):
+		lo, hi = splits[i], splits[i + 1]
+		idx = order[lo:hi]
+		edge_index = torch.from_numpy(np.stack([src_codes[idx], dst_codes[idx]])).long()
+		edge_attr = torch.from_numpy(feat_arr[idx])
+		y_edge = torch.from_numpy(label_arr[idx])
 
 		data = Data(
 			edge_index=edge_index,
 			edge_attr=edge_attr,
 			y=y_edge,
-			num_nodes=len(node_map),
+			num_nodes=n_nodes,
 		)
-		data.window_id = int(window_id)
+		data.window_id = int(wid)
+		data.window_start = float(wid)  # temporal ordering key
 		data_list.append(data)
 
 	return data_list

@@ -1,3 +1,8 @@
+# ──────────────────────────────────────────────
+# DEPRECATED: This file is a standalone duplicate of EdgeGNN.
+# The canonical implementation lives in  train.py.
+# This file is kept only for reference and will be removed.
+# ──────────────────────────────────────────────
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

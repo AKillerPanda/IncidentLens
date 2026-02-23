@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 import numpy as np
 from torch_geometric.data import Data
-from graph import network, node, build_snapshot_dataset
+from src.Backend.graph import network, node, build_snapshot_dataset
 
 
 # ===============================
@@ -99,14 +99,41 @@ def _aggregate_flows_numpy(
         std_iat, flow_label) all length F (number of unique flows).
     """
     n = len(win_ids)
+    if n == 0:
+        empty = np.array([], dtype=np.int64)
+        empty_f = np.array([], dtype=np.float32)
+        return (empty, empty, empty, empty, empty,
+                empty_f, empty_f, empty_f, empty_f, empty_f, empty)
 
-    # Encode 5 groupby keys into a single int64 composite key for fast sort
-    # Max values needed: win < 2^16, src/dst < 2^16, proto < 2^8, port < 2^16
-    composite = (win_ids.astype(np.int64) << 48 |
-                 src_codes.astype(np.int64) << 32 |
-                 dst_codes.astype(np.int64) << 16 |
-                 proto_codes.astype(np.int64) << 8 |
+    # Encode 5 groupby keys into a single int64 composite key for fast sort.
+    # Bit allocation: win(16) | src(16) | dst(16) | proto(8) | port(8) = 64 bits.
+    # Guard: if any dimension overflows its bit-width, fall back to
+    # wider packing (split into two keys) — keeps correctness for large datasets.
+    max_win = int(win_ids.max()) if n > 0 else 0
+    max_src = int(src_codes.max()) if n > 0 else 0
+    max_dst = int(dst_codes.max()) if n > 0 else 0
+    max_proto = int(proto_codes.max()) if n > 0 else 0
+    max_port = int(port_codes.max()) if n > 0 else 0
+
+    if max_win < 65536 and max_src < 65536 and max_dst < 65536 and max_proto < 256 and max_port < 256:
+        # Fast path: everything fits in 64 bits
+        composite = (win_ids.astype(np.int64) << 48 |
+                     src_codes.astype(np.int64) << 32 |
+                     dst_codes.astype(np.int64) << 16 |
+                     proto_codes.astype(np.int64) << 8 |
+                     port_codes.astype(np.int64))
+    else:
+        # Safe path: use two int64 keys (handles arbitrarily large cardinalities)
+        key_a = (win_ids.astype(np.int64) * (max_src + 1) + src_codes.astype(np.int64))
+        key_b = (dst_codes.astype(np.int64) * (max_proto + 1) * (max_port + 1) +
+                 proto_codes.astype(np.int64) * (max_port + 1) +
                  port_codes.astype(np.int64))
+        # Combine into single key via unique pair mapping
+        _, composite = np.unique(
+            np.column_stack([key_a, key_b]), axis=0, return_inverse=True
+        )
+        # Remap pkt order to match composite sort
+        composite = composite.astype(np.int64)
 
     # Sort by composite key then timestamp for IAT
     order = np.lexsort((timestamps, composite))
@@ -361,7 +388,7 @@ def build_sliding_window_graphs(
         data = Data(edge_index=ei, x=node_feats, num_nodes=n_local)
         data.edge_attr = torch.from_numpy(feat_arr[idx])
         data.y = torch.from_numpy(label_arr[idx])
-        data.window_start = float(window_starts[w])
+        data.window_start = float(window_starts[w]) if w < len(window_starts) else 0.0
         data.network = net
         graphs.append(data)
 
@@ -399,3 +426,273 @@ def analyze_graphs(graphs: list[Data]) -> None:
         print(f"Class {int(c)} count: {count} ({100*count/total:.2f}%)")
 
     print("============================\n")
+
+
+# ===============================
+# GRAPH-LEVEL COUNTERFACTUAL TOOLS
+# ===============================
+
+def edge_perturbation_counterfactual(
+    graph: Data,
+    target_edge_indices: list[int] | None = None,
+    max_removals: int = 5,
+) -> list[dict]:
+    """Compute graph-level counterfactuals via edge perturbation.
+
+    For each edge removed, measures the change in graph-level statistics
+    (mean edge features, node degree distribution) to identify which
+    connections have the greatest structural impact on the anomaly.
+
+    Vectorised: feature deltas are computed in a single (T, F) batch
+    operation, and structural impact uses the sum-of-squares update
+    formula to avoid O(N) recomputation per edge.
+
+    Parameters
+    ----------
+    graph : PyG Data with edge_index, edge_attr, y
+    target_edge_indices : specific edges to test (default: top malicious)
+    max_removals : max edges to perturb
+
+    Returns
+    -------
+    list of dicts with keys: edge_idx, src, dst, removed_label,
+    feature_impact (dict of feature -> delta), structural_impact (float)
+    """
+    ei = graph.edge_index.cpu().numpy()
+    ea = graph.edge_attr.cpu().numpy() if graph.edge_attr is not None else None
+    labels = graph.y.cpu().numpy() if graph.y is not None else None
+    n_edges = ei.shape[1]
+
+    if ea is None or n_edges < 2:
+        return []
+
+    n_nodes = graph.num_nodes
+
+    # Baseline statistics (computed once)
+    baseline_sum = ea.sum(axis=0)
+    baseline_mean = baseline_sum / n_edges
+    baseline_degree = (np.bincount(ei[0], minlength=n_nodes) +
+                       np.bincount(ei[1], minlength=n_nodes))
+    deg_sq_sum = float((baseline_degree.astype(np.float64) ** 2).sum())
+    deg_sum = float(baseline_degree.sum())
+    baseline_degree_std = float(baseline_degree.std())
+
+    # Select target edges (prefer malicious-labeled edges)
+    if target_edge_indices is not None:
+        targets = np.asarray(target_edge_indices[:max_removals])
+    elif labels is not None:
+        mal_idx = np.where(labels == 1)[0]
+        if len(mal_idx) > 0:
+            magnitudes = ea[mal_idx, min(1, ea.shape[1] - 1)]
+            targets = mal_idx[np.argsort(-magnitudes)[:max_removals]]
+        else:
+            magnitudes = ea[:, min(1, ea.shape[1] - 1)]
+            targets = np.argsort(-magnitudes)[:max_removals]
+    else:
+        targets = np.arange(min(max_removals, n_edges))
+
+    targets = np.asarray(targets)
+    n_targets = len(targets)
+    n_new = n_edges - 1
+
+    feat_names = ["packet_count", "total_bytes", "mean_payload", "mean_iat", "std_iat"]
+
+    # ── Batch feature impact: (T, F) matrix computed in one operation ──
+    target_feats = ea[targets]  # (T, F)
+    new_means = (baseline_sum[np.newaxis, :] - target_feats) / n_new
+    deltas = new_means - baseline_mean[np.newaxis, :]
+    abs_baseline = np.abs(baseline_mean).copy()
+    abs_baseline[abs_baseline < 1e-9] = 1e-9
+    pct_changes = np.abs(deltas) / abs_baseline[np.newaxis, :] * 100
+
+    # ── Batch structural impact via sum-of-squares update formula ──
+    # Removing edge i decrements degree[src[i]] and degree[dst[i]] by 1.
+    # new_deg_sq_sum = old - old_s² - old_d² + (old_s-1)² + (old_d-1)²
+    t_src = ei[0, targets]
+    t_dst = ei[1, targets]
+    old_s = baseline_degree[t_src].astype(np.float64)
+    old_d = baseline_degree[t_dst].astype(np.float64)
+    self_loop = t_src == t_dst
+
+    new_deg_sq = np.where(
+        self_loop,
+        deg_sq_sum - old_s ** 2 + (old_s - 2) ** 2,
+        deg_sq_sum - old_s ** 2 - old_d ** 2 + (old_s - 1) ** 2 + (old_d - 1) ** 2,
+    )
+    new_deg_sum = deg_sum - 2  # removing one edge always decrements total degree by 2
+    new_mean_deg = new_deg_sum / n_nodes
+    new_var = np.maximum(new_deg_sq / n_nodes - new_mean_deg ** 2, 0.0)
+    new_std = np.sqrt(new_var)
+    structural_impacts = np.abs(new_std - baseline_degree_std) / max(baseline_degree_std, 1e-9)
+
+    # ── Build result dicts (output assembly) ──
+    results = []
+    for t in range(n_targets):
+        edge_idx = int(targets[t])
+        feature_impact = {}
+        for j, fname in enumerate(feat_names[:ea.shape[1]]):
+            feature_impact[fname] = {
+                "delta": round(float(deltas[t, j]), 4),
+                "pct_change": round(float(pct_changes[t, j]), 2),
+            }
+        results.append({
+            "edge_idx": edge_idx,
+            "src": int(ei[0, edge_idx]),
+            "dst": int(ei[1, edge_idx]),
+            "removed_label": int(labels[edge_idx]) if labels is not None else 0,
+            "edge_features": {
+                fname: round(float(ea[edge_idx, j]), 4)
+                for j, fname in enumerate(feat_names[:ea.shape[1]])
+            },
+            "feature_impact": feature_impact,
+            "structural_impact": round(float(structural_impacts[t]), 4),
+        })
+
+    # Sort by structural impact descending
+    results.sort(key=lambda r: r["structural_impact"], reverse=True)
+    return results
+
+
+def compare_graph_windows(
+    graph_a: Data,
+    graph_b: Data,
+) -> dict:
+    """Compare two graph snapshots (e.g., a malicious window vs a normal one).
+
+    Computes structural and feature-level differences to identify what
+    changed between a normal and anomalous time window.
+
+    Returns
+    -------
+    dict with keys: node_diff, edge_diff, feature_diffs,
+    degree_distribution_shift, label_distribution_shift
+    """
+    ei_a = graph_a.edge_index.cpu().numpy()
+    ei_b = graph_b.edge_index.cpu().numpy()
+    ea_a = graph_a.edge_attr.cpu().numpy() if graph_a.edge_attr is not None else None
+    ea_b = graph_b.edge_attr.cpu().numpy() if graph_b.edge_attr is not None else None
+    y_a = graph_a.y.cpu().numpy() if graph_a.y is not None else np.zeros(ei_a.shape[1])
+    y_b = graph_b.y.cpu().numpy() if graph_b.y is not None else np.zeros(ei_b.shape[1])
+
+    feat_names = ["packet_count", "total_bytes", "mean_payload", "mean_iat", "std_iat"]
+
+    # Vectorised feature-level comparison
+    feature_diffs = {}
+    if ea_a is not None and ea_b is not None:
+        n_feats = min(ea_a.shape[1], ea_b.shape[1], len(feat_names))
+        mean_a = ea_a[:, :n_feats].mean(axis=0)
+        mean_b = ea_b[:, :n_feats].mean(axis=0)
+        delta_arr = mean_b - mean_a
+        abs_mean_a = np.abs(mean_a)
+        abs_mean_a[abs_mean_a < 1e-9] = 1e-9
+        pct_arr = np.abs(delta_arr) / abs_mean_a * 100
+        for j in range(n_feats):
+            d = float(delta_arr[j])
+            feature_diffs[feat_names[j]] = {
+                "window_a_mean": round(float(mean_a[j]), 4),
+                "window_b_mean": round(float(mean_b[j]), 4),
+                "delta": round(d, 4),
+                "pct_change": round(float(pct_arr[j]), 2),
+                "direction": "increase" if d > 0 else "decrease" if d < 0 else "unchanged",
+            }
+
+    # Degree distribution shift
+    deg_a = np.bincount(ei_a[0], minlength=max(graph_a.num_nodes, 1)) + \
+            np.bincount(ei_a[1], minlength=max(graph_a.num_nodes, 1))
+    deg_b = np.bincount(ei_b[0], minlength=max(graph_b.num_nodes, 1)) + \
+            np.bincount(ei_b[1], minlength=max(graph_b.num_nodes, 1))
+
+    # Label distribution
+    label_dist_a = {
+        "normal": int((y_a == 0).sum()),
+        "malicious": int((y_a == 1).sum()),
+    }
+    label_dist_b = {
+        "normal": int((y_b == 0).sum()),
+        "malicious": int((y_b == 1).sum()),
+    }
+
+    return {
+        "window_a": {
+            "num_nodes": int(graph_a.num_nodes),
+            "num_edges": int(ei_a.shape[1]),
+            "window_start": float(getattr(graph_a, "window_start", 0)),
+            "label_distribution": label_dist_a,
+            "mean_degree": round(float(deg_a.mean()), 2),
+        },
+        "window_b": {
+            "num_nodes": int(graph_b.num_nodes),
+            "num_edges": int(ei_b.shape[1]),
+            "window_start": float(getattr(graph_b, "window_start", 0)),
+            "label_distribution": label_dist_b,
+            "mean_degree": round(float(deg_b.mean()), 2),
+        },
+        "node_diff": int(graph_b.num_nodes) - int(graph_a.num_nodes),
+        "edge_diff": int(ei_b.shape[1]) - int(ei_a.shape[1]),
+        "feature_diffs": feature_diffs,
+        "degree_shift": round(float(deg_b.mean()) - float(deg_a.mean()), 4),
+        "label_distribution_shift": {
+            "normal_delta": label_dist_b["normal"] - label_dist_a["normal"],
+            "malicious_delta": label_dist_b["malicious"] - label_dist_a["malicious"],
+        },
+    }
+
+
+def find_most_anomalous_window(
+    graphs: list[Data],
+) -> tuple[int, Data, dict]:
+    """Find the graph window with the highest proportion of malicious edges.
+
+    Vectorised: computes all malicious ratios in one pass via numpy,
+    then selects the argmax.
+
+    Returns (window_index, graph, stats_dict).
+    """
+    if not graphs:
+        raise ValueError("No graphs provided")
+
+    # Vectorised: extract labels from all graphs and compute ratios in batch
+    ys = [g.y.cpu().numpy() if g.y is not None else np.zeros(g.edge_index.shape[1]) for g in graphs]
+    n_edges = np.array([len(y) for y in ys])
+    n_mal = np.array([int((y == 1).sum()) for y in ys])
+    ratios = n_mal / np.maximum(n_edges, 1)
+
+    best_idx = int(np.argmax(ratios))
+    stats = {
+        "window_index": best_idx,
+        "window_start": float(getattr(graphs[best_idx], "window_start", 0)),
+        "num_edges": int(n_edges[best_idx]),
+        "num_malicious": int(n_mal[best_idx]),
+        "malicious_ratio": round(float(ratios[best_idx]), 4),
+    }
+    return best_idx, graphs[best_idx], stats
+
+
+def find_most_normal_window(
+    graphs: list[Data],
+) -> tuple[int, Data, dict]:
+    """Find the graph window with the lowest proportion of malicious edges.
+
+    Vectorised: computes all malicious ratios in one pass via numpy,
+    then selects the argmin.
+
+    Returns (window_index, graph, stats_dict).
+    """
+    if not graphs:
+        raise ValueError("No graphs provided")
+
+    # Vectorised: extract labels from all graphs and compute ratios in batch
+    ys = [g.y.cpu().numpy() if g.y is not None else np.zeros(g.edge_index.shape[1]) for g in graphs]
+    n_edges = np.array([len(y) for y in ys])
+    n_mal = np.array([int((y == 1).sum()) for y in ys])
+    ratios = n_mal / np.maximum(n_edges, 1)
+
+    best_idx = int(np.argmin(ratios))
+    stats = {
+        "window_index": best_idx,
+        "window_start": float(getattr(graphs[best_idx], "window_start", 0)),
+        "num_edges": int(n_edges[best_idx]),
+        "num_malicious": int(n_mal[best_idx]),
+        "malicious_ratio": round(float(ratios[best_idx]), 4),
+    }
+    return best_idx, graphs[best_idx], stats

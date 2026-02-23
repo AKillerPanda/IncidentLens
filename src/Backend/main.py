@@ -31,29 +31,20 @@
 # print("Malicious %:", 100 * num_malicious / num_edges)
 
 
-import pandas as pd
-from graph_data_wrapper import build_sliding_window_graphs, analyze_graphs
+# ──────────────────────────────────────────────
+# IncidentLens CLI — delegates to testingentry
+# Run: python main.py health | ingest | investigate | serve | convert
+# ──────────────────────────────────────────────
 
-# Load data
-packets = pd.read_csv(r"C:\Users\adity\Desktop\AI\heavy\elasticsearch\data\ssdp_packets_rich.csv")
-labels = pd.read_csv(r"C:\Users\adity\Desktop\AI\heavy\elasticsearch\data\SSDP_Flood_labels.csv\SSDP_Flood_labels.csv")
+import os, sys
 
-# Fix label file columns
-labels = labels.rename(columns={
-    "Unnamed: 0": "packet_index",
-    "x": "label"
-})
+# Ensure project root is on sys.path so "src.Backend.*" imports resolve
+# regardless of how this script is invoked (python src/Backend/main.py, etc.)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-# Merge labels
-packets = packets.merge(labels, on="packet_index", how="left")
-packets["label"] = packets["label"].fillna(0)
+from src.Backend.tests.testingentry import main
 
-# Build sliding window graphs
-graphs = build_sliding_window_graphs(
-    packets,
-    window_size=1.0,
-    stride=0.5
-)
-
-# Analyze
-analyze_graphs(graphs)
+if __name__ == "__main__":
+    main()

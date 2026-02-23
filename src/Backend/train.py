@@ -19,7 +19,7 @@ from sklearn.metrics import (
 )
 
 
-from graph_data_wrapper import build_sliding_window_graphs
+from src.Backend.graph_data_wrapper import build_sliding_window_graphs
 
 
 # ============================================================
@@ -184,12 +184,12 @@ def evaluate(model, loader, criterion, device, threshold=0.5):
         for batch in loader:
             batch = batch.to(device)
 
-            # Ensure finite tensors at runtime as an extra guard
-            batch.x = tensor_make_finite_(batch.x)
-            batch.edge_attr = tensor_make_finite_(batch.edge_attr)
+            # NOTE: batch.x and batch.edge_attr are already sanitized by
+            # sanitize_graphs_inplace() at data-prep time — skipping
+            # redundant tensor_make_finite_ here saves a tensor copy per batch.
 
             logits = model(batch)
-            logits = tensor_make_finite_(logits)
+            logits = tensor_make_finite_(logits)  # model output may have NaN
 
             loss = criterion(logits, batch.y.float())
             total_loss += loss.item()
@@ -214,15 +214,21 @@ def evaluate(model, loader, criterion, device, threshold=0.5):
 
 
 def find_best_threshold(probs, labels):
-    best_f1 = 0.0
-    best_t = 0.5
-    for t in np.linspace(0.05, 0.95, 91):
-        preds = (probs >= t).astype(int)
-        f1 = f1_score(labels, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_t = float(t)
-    return best_t, best_f1
+    """Vectorised threshold search using numpy broadcasting."""
+    probs = np.asarray(probs)
+    labels = np.asarray(labels)
+    thresholds = np.linspace(0.05, 0.95, 91)
+    # (91, N) boolean matrix of predictions at each threshold
+    preds = probs[np.newaxis, :] >= thresholds[:, np.newaxis]
+    # Compute TP, FP, FN in bulk
+    tp = (preds & (labels == 1)).sum(axis=1).astype(np.float64)
+    fp = (preds & (labels == 0)).sum(axis=1).astype(np.float64)
+    fn = (~preds & (labels == 1)).sum(axis=1).astype(np.float64)
+    precision = tp / (tp + fp + 1e-9)
+    recall = tp / (tp + fn + 1e-9)
+    f1_arr = 2 * precision * recall / (precision + recall + 1e-9)
+    best_idx = int(np.argmax(f1_arr))
+    return float(thresholds[best_idx]), float(f1_arr[best_idx])
 
 
 # ============================================================
@@ -295,13 +301,12 @@ def train_edge_gnn(
         for batch_idx, batch in enumerate(loader, start=1):
             batch = batch.to(device)
 
-            batch.x = tensor_make_finite_(batch.x)
-            batch.edge_attr = tensor_make_finite_(batch.edge_attr)
+            # batch.x / edge_attr already sanitized at data-prep time
 
             optimizer.zero_grad()
 
             logits = model(batch)
-            logits = tensor_make_finite_(logits)
+            logits = tensor_make_finite_(logits)  # model output may have NaN
 
             loss = criterion(logits, batch.y.float())
 
@@ -311,16 +316,9 @@ def train_edge_gnn(
 
             loss.backward()
 
-            # Gradient norm
-            total_norm = 0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
-            grad_norms.append(total_norm)
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            # clip_grad_norm_ returns the total norm before clipping
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            grad_norms.append(total_norm.item())
 
             optimizer.step()
 
@@ -336,7 +334,7 @@ def train_edge_gnn(
         labels = torch.cat(all_labels).numpy()
 
         pr_auc = average_precision_score(labels, probs)
-        roc_auc = roc_auc_score(labels, probs)
+        roc_auc = safe_roc_auc(labels, probs)
 
         preds = (probs >= 0.5).astype(int)
         f1 = f1_score(labels, preds)
@@ -364,51 +362,53 @@ def train_edge_gnn(
 # ============================================================
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train EdgeGNN on sliding-window graphs")
+    parser.add_argument("--packets", required=True, help="Path to ssdp_packets_rich.csv")
+    parser.add_argument("--labels", required=True, help="Path to SSDP_Flood_labels.csv")
+    parser.add_argument("--window-size", type=float, default=1.0)
+    parser.add_argument("--stride", type=float, default=0.5)
+    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.2)
+    args = parser.parse_args()
+
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-    PACKET_CSV = r"C:\Users\adity\Desktop\AI\heavy\elasticsearch\data\ssdp_packets_rich.csv"
-    LABEL_CSV  = r"C:\Users\adity\Desktop\AI\heavy\elasticsearch\data\SSDP_Flood_labels.csv\SSDP_Flood_labels.csv"
-
     print("Loading CSV files...")
-    packets = pd.read_csv(PACKET_CSV)
-    labels = pd.read_csv(LABEL_CSV)
+    packets = pd.read_csv(args.packets)
+    labels = pd.read_csv(args.labels)
 
     labels = labels.rename(columns={"Unnamed: 0": "packet_index", "x": "label"})
     packets = packets.merge(labels, on="packet_index", how="left")
     packets["label"] = packets["label"].fillna(0).astype(int)
 
-    # quick label check BEFORE graphs
     raw_pos = int((packets["label"] == 1).sum())
     raw_neg = int((packets["label"] == 0).sum())
     print(f"[RAW PACKET LABELS] pos={raw_pos} neg={raw_neg} pos_rate={raw_pos/(raw_pos+raw_neg+1e-9):.8f}")
 
     print("Building sliding window graphs...")
-
-    # IMPORTANT: if you have too few positives, increase window_size
-    WINDOW_SIZE = 1.0
-    STRIDE = 0.5
-
     graphs = build_sliding_window_graphs(
         packets,
-        window_size=WINDOW_SIZE,
-        stride=STRIDE,
+        window_size=args.window_size,
+        stride=args.stride,
         bytes_col="packet_length",
         label_col="label",
     )
 
-    print(f"Built {len(graphs)} graphs with WINDOW_SIZE={WINDOW_SIZE}, STRIDE={STRIDE}")
-
-    # If you still have too few positives, rerun with larger windows:
-    # WINDOW_SIZE = 10.0; STRIDE = 5.0
-    # WINDOW_SIZE = 30.0; STRIDE = 10.0
+    print(f"Built {len(graphs)} graphs with window_size={args.window_size}, stride={args.stride}")
 
     model = train_edge_gnn(
         graphs,
         device=DEVICE,
-        epochs=60,
-        batch_size=16,
-        lr=1e-3,
-        hidden_dim=64,
-        num_layers=2,
-        dropout=0.2,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
     )
