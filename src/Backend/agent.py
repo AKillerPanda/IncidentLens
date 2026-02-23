@@ -200,11 +200,8 @@ class IncidentAgent:
                     "content": result_str,
                 })
 
-            # Check finish_reason
-            if choice.finish_reason == "stop":
-                if msg.content:
-                    yield conclusion_event(msg.content)
-                return
+            # After processing tool calls, loop to get the next LLM response
+            # (finish_reason == "tool_calls" when tools were invoked)
 
         yield error_event("Max reasoning steps reached. Investigation truncated.")
 

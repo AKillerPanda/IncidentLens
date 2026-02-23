@@ -470,7 +470,7 @@ def run_pipeline(
         report["embeddings_indexed"] = 0
 
     # Let ES refresh before queries
-    es.indices.refresh(index="_all")
+    es.indices.refresh(index="incidentlens-*")
     time.sleep(1)
 
     # --- 7. Counterfactual analysis ---

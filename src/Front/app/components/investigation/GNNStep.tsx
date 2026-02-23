@@ -23,6 +23,12 @@ export function GNNStep({ data, onNext }: GNNStepProps) {
     const width = 800;
     const height = 500;
 
+    // Deep clone data so D3 force simulation doesn't mutate props
+    const simData = {
+      nodes: data.nodes.map(n => ({ ...n })),
+      edges: data.edges.map(e => ({ ...e })),
+    };
+
     // Clear previous content
     d3.select(svgRef.current).selectAll('*').remove();
 
@@ -47,8 +53,8 @@ export function GNNStep({ data, onNext }: GNNStepProps) {
       .attr('fill', d => d === 'anomalous' ? '#ef4444' : '#64748b');
 
     // Create force simulation
-    const simulation = d3.forceSimulation(data.nodes as any)
-      .force('link', d3.forceLink(data.edges)
+    const simulation = d3.forceSimulation(simData.nodes as any)
+      .force('link', d3.forceLink(simData.edges)
         .id((d: any) => d.id)
         .distance(150))
       .force('charge', d3.forceManyBody().strength(-500))
@@ -58,7 +64,7 @@ export function GNNStep({ data, onNext }: GNNStepProps) {
     // Draw edges
     const link = svg.append('g')
       .selectAll('line')
-      .data(data.edges)
+      .data(simData.edges)
       .join('line')
       .attr('stroke', d => d.anomalous ? '#ef4444' : '#475569')
       .attr('stroke-width', d => d.weight / 2)
@@ -68,7 +74,7 @@ export function GNNStep({ data, onNext }: GNNStepProps) {
     // Draw nodes
     const node = svg.append('g')
       .selectAll('g')
-      .data(data.nodes)
+      .data(simData.nodes)
       .join('g')
       .call(d3.drag<any, any>()
         .on('start', dragstarted)

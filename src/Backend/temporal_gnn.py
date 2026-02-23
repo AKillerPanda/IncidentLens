@@ -146,6 +146,10 @@ def recompute_node_features(graph: Data) -> Data:
     Expects edge_attr layout: ``[pkt_count, total_bytes, ...]``.
     """
     if graph.edge_attr is None or graph.edge_attr.shape[1] < 2:
+        # Cannot recompute: initialise zero features if none exist
+        if graph.x is None and graph.num_nodes:
+            n = graph.num_nodes or 1
+            graph.x = torch.zeros((n, 5), dtype=torch.float32)
         return graph  # cannot recompute without standard edge features
 
     src = graph.edge_index[0].detach().cpu().numpy()

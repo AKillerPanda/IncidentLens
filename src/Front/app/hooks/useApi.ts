@@ -41,10 +41,10 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): UseAsyncResult
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const tick = useRef(0);
+  const [tick, setTick] = useState(0);
 
   const refetch = useCallback(() => {
-    tick.current += 1;
+    setTick((t) => t + 1);
     setLoading(true);
     setError(null);
   }, []);
@@ -69,7 +69,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): UseAsyncResult
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick.current, ...deps]);
+  }, [tick, ...deps]);
 
   return { data, loading, error, refetch };
 }
@@ -144,29 +144,11 @@ export function useElasticsearchData(incidentId: string | undefined): UseAsyncRe
   return useAsync(async () => {
     if (!incidentId) return null;
     try {
-      // Try to get flow detail + build an ES-like log view
-      const flowsRes = await api.listFlows({ size: 1 });
-      if (flowsRes.flows.length > 0) {
-        // Search for flows related to this incident's IPs
-        const allFlows = await api.listFlows({ size: 20 });
-        const logs = allFlows.flows.slice(0, 8).map((f) => ({
-          timestamp: new Date().toISOString(),
-          source: f.src_ip || "unknown",
-          message: `Flow ${f.src_ip} → ${f.dst_ip}: ${f.packet_count ?? 0} packets, ${f.total_bytes ?? 0} bytes${f.label === 1 ? " [ANOMALOUS]" : ""}`,
-          level: f.label === 1 ? "CRITICAL" : "INFO",
-        }));
-        return {
-          totalHits: allFlows.count,
-          logs,
-          query: {
-            bool: {
-              must: [
-                { term: { label: 1 } },
-                { range: { "@timestamp": { gte: "now-1h" } } },
-              ],
-            },
-          },
-        };
+      // Use the incident-scoped logs endpoint
+      const res = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/logs?size=20`);
+      if (res.ok) {
+        const data = await res.json();
+        return data as ElasticsearchData;
       }
     } catch {
       // fall through
@@ -184,10 +166,11 @@ export function useNetworkGraph(incidentId: string | undefined): UseAsyncResult<
   return useAsync(async () => {
     if (!incidentId) return null;
     try {
-      // Build graph from anomalous flows
-      const res = await api.detectAnomalies({ size: 30 });
-      if (res.flows.length > 0) {
-        return flowsToGraph(res.flows);
+      // Use the incident-scoped graph endpoint
+      const res = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/graph?size=30`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.nodes?.length > 0) return data as NetworkGraphData;
       }
     } catch {
       // fall through
@@ -271,8 +254,8 @@ function backendCfToFrontend(cf: BackendCounterfactualResponse): CounterfactualE
     counterfactual: `Nearest normal flow — baseline traffic pattern`,
     changes: diffs.slice(0, 6).map((d) => ({
       parameter: d.feature,
-      original: String(d.anomalous_value?.toFixed?.(2) ?? d.anomalous_value),
-      modified: String(d.normal_value?.toFixed?.(2) ?? d.normal_value),
+      original: String(d.anomalous_value?.toFixed?.(2) ?? d.anomalous_value ?? "N/A"),
+      modified: String(d.normal_value?.toFixed?.(2) ?? d.normal_value ?? "N/A"),
       impact: Math.min(d.abs_diff / maxDiff, 1),
     })),
     prediction: {
@@ -306,6 +289,13 @@ export function useInvestigationStream() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Cleanup on unmount — abort any in-progress stream
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const start = useCallback(async (query: string) => {
     abortRef.current?.abort();

@@ -65,10 +65,13 @@ export function Investigation() {
     );
   }
 
+  const stepOrder = ['overview', 'elasticsearch', 'gnn', 'counterfactual'];
+  const currentIdx = stepOrder.indexOf(currentStep);
+
   const steps = [
-    { id: 'overview', label: 'Overview', icon: Clock, completed: true },
-    { id: 'elasticsearch', label: 'Log Analysis', icon: Database, completed: currentStep !== 'overview' },
-    { id: 'gnn', label: 'Network Graph', icon: Network, completed: currentStep === 'counterfactual' },
+    { id: 'overview', label: 'Overview', icon: Clock, completed: currentIdx > 0 },
+    { id: 'elasticsearch', label: 'Log Analysis', icon: Database, completed: currentIdx > 1 },
+    { id: 'gnn', label: 'Network Graph', icon: Network, completed: currentIdx > 2 },
     { id: 'counterfactual', label: 'Explainability', icon: Brain, completed: false },
   ];
 

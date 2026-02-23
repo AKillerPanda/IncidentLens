@@ -142,7 +142,10 @@ async def detect(req: DetectRequest):
         "threshold": req.threshold,
         "size": req.size,
     })
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.get("/api/flows")
@@ -161,14 +164,20 @@ async def list_flows(
     if dst_ip:
         args["dst_ip"] = dst_ip
     result_str = agent_tools.dispatch("search_flows", args)
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.get("/api/stats")
 async def feature_stats():
     """Feature statistics grouped by label."""
     result_str = agent_tools.dispatch("feature_stats", {})
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.post("/api/counterfactual")
@@ -177,14 +186,20 @@ async def counterfactual(req: CounterfactualRequest):
     result_str = agent_tools.dispatch("counterfactual_analysis", {
         "flow_id": req.flow_id,
     })
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.get("/api/severity/{flow_id}")
 async def severity(flow_id: str):
     """Assess severity of a flow."""
     result_str = agent_tools.dispatch("assess_severity", {"flow_id": flow_id})
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.get("/api/similar/{flow_id}")
@@ -193,7 +208,10 @@ async def similar(flow_id: str, k: int = Query(5)):
     result_str = agent_tools.dispatch("find_similar_incidents", {
         "flow_id": flow_id, "k": k,
     })
-    return json.loads(result_str)
+    parsed = json.loads(result_str)
+    if "error" in parsed:
+        return JSONResponse(status_code=502, content=parsed)
+    return parsed
 
 
 @app.get("/api/tools")
@@ -261,11 +279,26 @@ async def get_incident(incident_id: str):
 @app.get("/api/incidents/{incident_id}/graph")
 async def incident_graph(incident_id: str, size: int = Query(30)):
     """Build a network graph from anomalous flows for the D3 visualisation."""
+    # Fetch the incident to scope the graph to related IPs
+    inc_str = agent_tools.dispatch("get_flow", {"flow_id": incident_id})
+    inc_data = json.loads(inc_str)
+    scope_ips: set[str] = set()
+    if "error" not in inc_data:
+        for key in ("src_ip", "dst_ip"):
+            if inc_data.get(key):
+                scope_ips.add(inc_data[key])
+
     result_str = agent_tools.dispatch("detect_anomalies", {
         "method": "label", "size": size,
     })
     data = json.loads(result_str)
-    flows = data.get("flows", [])
+    all_flows = data.get("flows", [])
+
+    # If we resolved the incident's IPs, keep only flows involving them
+    flows = [
+        f for f in all_flows
+        if not scope_ips or f.get("src_ip") in scope_ips or f.get("dst_ip") in scope_ips
+    ] if scope_ips else all_flows
 
     # Build node + edge sets
     node_map: dict[str, dict[str, Any]] = {}
@@ -308,15 +341,24 @@ async def incident_graph(incident_id: str, size: int = Query(30)):
 async def incident_logs(incident_id: str, size: int = Query(20)):
     """Return ES-style log entries for the frontend log viewer."""
     import datetime
+    from datetime import timezone
 
-    result_str = agent_tools.dispatch("search_flows", {"size": size})
+    # Fetch the incident to scope logs to related IPs
+    inc_str = agent_tools.dispatch("get_flow", {"flow_id": incident_id})
+    inc_data = json.loads(inc_str)
+    search_args: dict[str, Any] = {"size": size}
+    if "error" not in inc_data:
+        if inc_data.get("src_ip"):
+            search_args["src_ip"] = inc_data["src_ip"]
+
+    result_str = agent_tools.dispatch("search_flows", search_args)
     data = json.loads(result_str)
     flows = data.get("flows", [])
 
     logs = []
     for f in flows[:size]:
         logs.append({
-            "timestamp": f.get("@timestamp", datetime.datetime.utcnow().isoformat() + "Z"),
+            "timestamp": f.get("@timestamp", datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")),
             "source": f.get("src_ip", "unknown"),
             "message": (
                 f"Flow {f.get('src_ip', '?')} → {f.get('dst_ip', '?')}: "
@@ -432,7 +474,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run(
-        "server:app",
+        "src.Backend.server:app",
         host="0.0.0.0",
         port=port,
         reload=True,

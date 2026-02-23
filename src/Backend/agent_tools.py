@@ -322,7 +322,7 @@ def _tool_graph_edge_cf(window_index: int | None = None, max_removals: int = 5, 
         # Auto-select most anomalous window
         idx, graph, stats = wrappers.find_anomalous_window(graphs)
     else:
-        if window_index >= len(graphs):
+        if window_index < 0 or window_index >= len(graphs):
             return {"error": f"Window {window_index} out of range (0-{len(graphs)-1})"}
         idx = window_index
         graph = graphs[idx]
@@ -347,10 +347,10 @@ def _tool_graph_window_compare(window_a: int | None = None, window_b: int | None
     graphs = _GRAPH_CACHE.get("graphs")
     if graphs is None:
         return {"error": "No graphs loaded. Run ingest pipeline first."}
-    if window_a is not None and window_a >= len(graphs):
-        return {"error": f"Window A={window_a} out of range"}
-    if window_b is not None and window_b >= len(graphs):
-        return {"error": f"Window B={window_b} out of range"}
+    if window_a is not None and (window_a < 0 or window_a >= len(graphs)):
+        return {"error": f"Window A={window_a} out of range (0-{len(graphs)-1})"}
+    if window_b is not None and (window_b < 0 or window_b >= len(graphs)):
+        return {"error": f"Window B={window_b} out of range (0-{len(graphs)-1})"}
 
     return wrappers.graph_window_comparison(graphs, window_a=window_a, window_b=window_b)
 
@@ -646,6 +646,8 @@ def _sanitize_for_json(obj: Any) -> Any:
     if isinstance(obj, (np.floating,)):
         v = float(obj)
         return None if (math.isnan(v) or math.isinf(v)) else v
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
     return obj
 
 

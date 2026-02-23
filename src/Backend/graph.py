@@ -186,11 +186,12 @@ def build_flow_table(
 			f"{payload_col}_mean": "mean_payload_length",
 			"iat_mean": "mean_inter_arrival",
 			"iat_std": "std_inter_arrival",
-			f"{udp_len_col}_mean": "udp_length_mean" if udp_len_col else "udp_length_mean",
+			"udp_length_mean": "udp_length_mean",
 			"tcp_syn_mean": "tcp_flag_syn_rate",
-			f"{label_col}_max": "edge_label" if label_col else "edge_label",
 		}
 	)
+	if label_col and f"{label_col}_max" in grouped.columns:
+		grouped = grouped.rename(columns={f"{label_col}_max": "edge_label"})
 
 	if "std_inter_arrival" in grouped.columns:
 		grouped["std_inter_arrival"] = grouped["std_inter_arrival"].fillna(0.0)

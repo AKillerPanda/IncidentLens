@@ -334,7 +334,7 @@ def train_edge_gnn(
         labels = torch.cat(all_labels).numpy()
 
         pr_auc = average_precision_score(labels, probs)
-        roc_auc = roc_auc_score(labels, probs)
+        roc_auc = safe_roc_auc(labels, probs)
 
         preds = (probs >= 0.5).astype(int)
         f1 = f1_score(labels, preds)

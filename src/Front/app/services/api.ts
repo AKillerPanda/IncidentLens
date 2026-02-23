@@ -135,9 +135,17 @@ export async function* investigateStream(
   let error: Error | null = null;
 
   ws.onmessage = (ev) => {
-    const event: InvestigationEvent = JSON.parse(ev.data);
+    let event: InvestigationEvent;
+    try {
+      event = JSON.parse(ev.data);
+    } catch {
+      error = new Error("Malformed JSON from server");
+      resolve?.();
+      return;
+    }
     if (event.type === "done") {
       done = true;
+      ws.close();
       resolve?.();
       return;
     }
@@ -159,6 +167,11 @@ export async function* investigateStream(
   await new Promise<void>((res, rej) => {
     ws.onopen = () => {
       ws.send(JSON.stringify({ query }));
+      // Restore runtime error handler after successful connection
+      ws.onerror = () => {
+        error = new Error("WebSocket error");
+        resolve?.();
+      };
       res();
     };
     ws.onerror = () => rej(new Error("WebSocket failed to connect"));

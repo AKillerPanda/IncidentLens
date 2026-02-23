@@ -673,9 +673,10 @@ def generate_embeddings(
         if actual_dim != embedding_dim:
             logger.warning(
                 "GNN embedding_dim=%d differs from requested embedding_dim=%d; "
-                "ensure ES index was created with dims=%d",
+                "using actual dimension %d for consistency",
                 actual_dim, embedding_dim, actual_dim,
             )
+            embedding_dim = actual_dim  # use actual dim so ES mapping matches
         return all_flow_ids, embeddings, all_labels
 
     # ══════════════════════════════════════════════════════
