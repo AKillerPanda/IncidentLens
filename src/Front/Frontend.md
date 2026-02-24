@@ -32,7 +32,7 @@ Data is fetched from the live FastAPI backend via typed hooks. If the backend is
 | **Components** | shadcn/ui (Card, Badge, Button, Tabs, Progress, etc.) |
 | **Visualization** | D3.js force-directed graph (interactive, drag-enabled) |
 | **API layer** | Typed fetch client (`services/api.ts`) + WebSocket async-generator (20 typed functions) |
-| **State** | React hooks (`hooks/useApi.ts`) — 12 hooks: live backend with mock fallback |
+| **State** | React hooks (`hooks/useApi.ts`) — 12 hooks: live backend with mock fallback. `useAsync` uses a ref-based pattern to avoid stale closures |
 | **Icons** | lucide-react |
 | **Date formatting** | date-fns |
 | **Toasts** | sonner (`<Toaster />` in `App.tsx`) |
@@ -106,6 +106,7 @@ A 4-step wizard with a progress bar and clickable step navigation. Uses 4 hooks 
 | Component | File | Purpose |
 |:----------|:-----|:--------|
 | `Root` | `Root.tsx` | Layout shell — dark theme wrapper with `<Outlet>` |
+| `ErrorBoundary` | `ErrorBoundary.tsx` | Catches unhandled React rendering errors, displays retry fallback UI |
 | `Dashboard` | `Dashboard.tsx` | Incident list page with stats and search |
 | `Investigation` | `Investigation.tsx` | 4-step wizard orchestrator with index-based step completion tracking |
 | `NotFound` | `NotFound.tsx` | 404 page |
@@ -232,7 +233,7 @@ interface AggregationResponse { buckets: AggregationBucket[]; after_key?: Record
 
 > **Field-name note:** The backend’s `wrappers.py` stores counterfactual diffs as `feature_diffs` with `original_value` / `cf_value` keys. The `POST /api/counterfactual` endpoint reshapes these into the frontend’s `diffs` array with `anomalous_value` / `normal_value` keys. If you query ES directly, the field names will differ.
 
-> **Type duplication warning:** `data/mockData.ts` re-declares `Incident`, `NetworkNode`, `NetworkEdge`, and `CounterfactualExplanation`. Two step components (`GNNStep.tsx`, `CounterfactualStep.tsx`) currently import from `mockData.ts` instead of `types.ts`. Keep both files in sync or consolidate imports.
+> **Type duplication warning:** All step components and `mockData.ts` import types from the canonical `types.ts`. If you add new types, add them to `types.ts` to maintain the single source of truth.
 ```
 
 ---
@@ -337,7 +338,7 @@ src/Front/
 ├── __init__.py
 ├── app/
 │   ├── main.tsx                         # React 19 createRoot mount
-│   ├── App.tsx                          # RouterProvider + Toaster
+│   ├── App.tsx                          # ErrorBoundary + RouterProvider + Toaster
 │   ├── routes.tsx                       # Route definitions
 │   ├── types.ts                         # Shared UI + backend response types
 │   ├── services/
@@ -346,6 +347,7 @@ src/Front/
 │   │   └── useApi.ts                    # 8 hooks — live API with mock fallback
 │   ├── components/
 │   │   ├── Root.tsx                     # Layout shell (dark bg + Outlet)
+│   │   ├── ErrorBoundary.tsx            # Error boundary with retry fallback
 │   │   ├── Dashboard.tsx                # Incident list + stats (useIncidents)
 │   │   ├── Investigation.tsx            # 4-step wizard (4 hooks, per-step loading)
 │   │   ├── NotFound.tsx                 # 404 page

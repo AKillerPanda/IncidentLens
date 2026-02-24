@@ -42,6 +42,7 @@ import datetime
 import json
 import logging
 import os
+import threading
 import time
 from datetime import timezone
 from typing import Any
@@ -67,9 +68,13 @@ app = FastAPI(
     version="0.2.0",
 )
 
+_ALLOWED_ORIGINS = os.getenv(
+    "INCIDENTLENS_CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # lock down in production
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -93,12 +98,15 @@ def _startup_load_gnn():
 
 # Agent singleton (reused across requests)
 _agent: IncidentAgent | None = None
+_agent_lock = threading.Lock()
 
 
 def _get_agent() -> IncidentAgent:
     global _agent
     if _agent is None:
-        _agent = IncidentAgent(AgentConfig())
+        with _agent_lock:
+            if _agent is None:
+                _agent = IncidentAgent(AgentConfig())
     return _agent
 
 
@@ -107,6 +115,7 @@ def _get_agent() -> IncidentAgent:
 # ──────────────────────────────────────────────
 _DETECT_CACHE: dict[str, Any] = {"data": None, "ts": 0.0, "key": ""}
 _DETECT_TTL = 15.0  # seconds
+_DETECT_LOCK = threading.Lock()
 
 
 def _cached_detect(method: str = "label", threshold: float = 0.5, size: int = 50) -> dict:
@@ -118,14 +127,16 @@ def _cached_detect(method: str = "label", threshold: float = 0.5, size: int = 50
     """
     cache_key = f"{method}:{threshold}:{size}"
     now = time.time()
-    if _DETECT_CACHE["data"] is not None and _DETECT_CACHE["key"] == cache_key and (now - _DETECT_CACHE["ts"]) < _DETECT_TTL:
-        return _DETECT_CACHE["data"]
+    with _DETECT_LOCK:
+        if _DETECT_CACHE["data"] is not None and _DETECT_CACHE["key"] == cache_key and (now - _DETECT_CACHE["ts"]) < _DETECT_TTL:
+            return _DETECT_CACHE["data"]
 
     # Call the tool directly (returns dict, not JSON string)
     result = agent_tools._REGISTRY["detect_anomalies"](method=method, threshold=threshold, size=size)
-    _DETECT_CACHE["data"] = result
-    _DETECT_CACHE["ts"] = now
-    _DETECT_CACHE["key"] = cache_key
+    with _DETECT_LOCK:
+        _DETECT_CACHE["data"] = result
+        _DETECT_CACHE["ts"] = time.time()
+        _DETECT_CACHE["key"] = cache_key
     return result
 
 
@@ -336,7 +347,7 @@ def _flow_to_incident(flow: dict) -> dict:
     Uses the same severity thresholds as the runtime field — keeping
     Python and ES-level severity always in sync.
     """
-    score = flow.get("prediction_score", 0.85 if flow.get("label") == 1 else 0.2)
+    score = flow.get("prediction_score") or (0.85 if flow.get("label") == 1 else 0.2)
     # Use runtime-computed severity if available, else compute locally
     sev = flow.get("severity_level")
     if not sev:
@@ -583,6 +594,9 @@ async def search_counterfactuals(
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+_ALLOWED_AGG_FIELDS = {"src_ip", "dst_ip", "protocol", "label", "severity_level"}
+
+
 @app.get("/api/aggregate/{field}")
 async def aggregate_field(
     field: str,
@@ -594,6 +608,11 @@ async def aggregate_field(
     handles unbounded cardinality (many unique IPs) where a standard
     terms aggregation would silently truncate.
     """
+    if field not in _ALLOWED_AGG_FIELDS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Field '{field}' not allowed. Allowed: {sorted(_ALLOWED_AGG_FIELDS)}"},
+        )
     try:
         raw_buckets = await asyncio.to_thread(
             wrappers.composite_aggregation, field, None, size,

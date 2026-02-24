@@ -46,6 +46,10 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): UseAsyncResult
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
+  // Keep a stable ref to the latest fn to avoid stale closures
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+
   const refetch = useCallback(() => {
     setTick((t) => t + 1);
     setLoading(true);
@@ -55,7 +59,7 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): UseAsyncResult
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fn()
+    fnRef.current()
       .then((d) => {
         if (!cancelled) {
           setData(d);

@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { ChevronRight, Network as NetworkIcon, TrendingUp } from 'lucide-react';
-import { NetworkNode, NetworkEdge } from '../../data/mockData';
+import { NetworkNode, NetworkEdge } from '../../types';
 
 interface GNNStepProps {
   data: {

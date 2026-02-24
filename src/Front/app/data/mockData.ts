@@ -1,29 +1,5 @@
-export interface Incident {
-  id: string;
-  title: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  status: 'investigating' | 'resolved' | 'escalated';
-  timestamp: string;
-  affectedSystems: string[];
-  description: string;
-  anomalyScore: number;
-}
-
-export interface NetworkNode {
-  id: string;
-  label: string;
-  type: 'server' | 'service' | 'database' | 'endpoint' | 'firewall';
-  status: 'normal' | 'suspicious' | 'compromised';
-  risk: number;
-}
-
-export interface NetworkEdge {
-  source: string;
-  target: string;
-  type: 'connection' | 'data_flow' | 'dependency';
-  weight: number;
-  anomalous: boolean;
-}
+import type { Incident, NetworkNode, NetworkEdge, CounterfactualExplanation } from '../types';
+export type { Incident, NetworkNode, NetworkEdge, CounterfactualExplanation };
 
 export const mockIncidents: Incident[] = [
   {
@@ -227,21 +203,6 @@ export const mockNetworkGraph: Record<string, { nodes: NetworkNode[]; edges: Net
     ],
   },
 };
-
-export interface CounterfactualExplanation {
-  original: string;
-  counterfactual: string;
-  changes: Array<{
-    parameter: string;
-    original: string;
-    modified: string;
-    impact: number;
-  }>;
-  prediction: {
-    original: string;
-    counterfactual: string;
-  };
-}
 
 export const mockCounterfactuals: Record<string, CounterfactualExplanation> = {
   'INC-2026-001': {

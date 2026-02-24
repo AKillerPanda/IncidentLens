@@ -131,8 +131,8 @@ class network:
 		return Data(edge_index=edge_index, x=x, num_nodes=self.num_nodes)
         
 # Base temporal graph pipeline (snapshot graphs)
-def add_window_id(df, ts_col: str, delta_t: float, t0: Optional[float] = None):
-	
+def add_window_id(df: "pd.DataFrame", ts_col: str, delta_t: float, t0: Optional[float] = None) -> "pd.DataFrame":
+	"""Assign integer window IDs based on timestamp column and time delta."""
 
 	if t0 is None:
 		t0 = float(df[ts_col].min())
@@ -143,14 +143,14 @@ def add_window_id(df, ts_col: str, delta_t: float, t0: Optional[float] = None):
 	return df
 
 
-def build_node_map(df, src_col: str, dst_col: str) -> dict[str, int]:
-
+def build_node_map(df: "pd.DataFrame", src_col: str, dst_col: str) -> dict[str, int]:
+	"""Map unique IP addresses to contiguous integer node IDs."""
 	ips = pd.concat([df[src_col], df[dst_col]], ignore_index=True).dropna().unique()
 	return {ip: idx for idx, ip in enumerate(ips)}
 
 
 def build_flow_table(
-	df,
+	df: "pd.DataFrame",
 	ts_col: str = "timestamp",
 	src_col: str = "src_ip",
 	dst_col: str = "dst_ip",
@@ -160,7 +160,8 @@ def build_flow_table(
 	udp_len_col: Optional[str] = "udp_length",
 	tcp_flags_col: Optional[str] = "tcp_flags",
 	label_col: Optional[str] = "label",
-):
+) -> "pd.DataFrame":
+	"""Aggregate packet-level DataFrame into per-flow statistics."""
 
 	keys = ["window_id", src_col, dst_col, proto_col]
 	df = df.sort_values(keys + [ts_col]).copy()
@@ -215,12 +216,13 @@ def build_flow_table(
 
 
 def build_window_data(
-	flows_df,
+	flows_df: "pd.DataFrame",
 	node_map: dict[str, int],
 	src_col: str = "src_ip",
 	dst_col: str = "dst_ip",
 	proto_col: str = "protocol",
-):
+) -> list:
+	"""Convert aggregated flow table into per-window PyG Data objects."""
 	feature_cols = [
 		"packet_count",
 		"total_bytes",
@@ -266,13 +268,14 @@ def build_window_data(
 
 
 def build_snapshot_dataset(
-	packets_df,
+	packets_df: "pd.DataFrame",
 	delta_t: float = 5.0,
 	ts_col: str = "timestamp",
 	src_col: str = "src_ip",
 	dst_col: str = "dst_ip",
 	proto_col: str = "protocol",
-):
+) -> tuple:
+	"""Build temporal graph snapshots from raw packet DataFrame."""
 	packets_df = add_window_id(packets_df, ts_col=ts_col, delta_t=delta_t)
 	flows_df = build_flow_table(
 		packets_df,

@@ -216,6 +216,7 @@ def cmd_train(args):
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
         batch_size=args.batch_size,
+        use_ode=getattr(args, "ode", False),
         checkpoint_path=checkpoint,
         norm_stats=info.get("norm_stats"),
         seq_len=args.seq_len,
@@ -240,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- ingest ---
     p_ingest = sub.add_parser("ingest", help="Run data ingestion + analysis pipeline")
-    p_ingest.add_argument("--data-dir", default=str(Path(__file__).resolve().parent.parent.parent.parent / "data"))
+    p_ingest.add_argument("--data-dir", default=str(Path(__file__).resolve().parent.parent.parent / "data"))
     p_ingest.add_argument("--max-rows", type=int, default=None)
     p_ingest.add_argument("--skip-graphs", action="store_true")
     p_ingest.add_argument("--skip-raw", action="store_true")
@@ -263,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_conv = sub.add_parser("convert", help="Convert CSV -> NDJSON")
     p_conv.add_argument("--packets", default=None, help="Path to ssdp_packets_rich.csv")
     p_conv.add_argument("--labels", default=None, help="Path to SSDP_Flood_labels.csv")
-    p_conv.add_argument("--outdir", default=str(Path(__file__).resolve().parent.parent.parent.parent / "data"))
+    p_conv.add_argument("--outdir", default=str(Path(__file__).resolve().parent.parent.parent / "data"))
     p_conv.add_argument("--chunk-size", type=int, default=100_000)
     p_conv.add_argument("--max-rows", type=int, default=None)
 
@@ -281,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--hidden-dim", type=int, default=64)
     p_train.add_argument("--dropout", type=float, default=0.2)
     p_train.add_argument("--batch-size", type=int, default=8, help="Sequences per gradient update")
+    p_train.add_argument("--ode", action="store_true", help="Use Neural ODE weight evolution (requires torchdiffeq)")
     p_train.add_argument("--checkpoint", default=None, help="Where to save model (default: models/temporal_gnn.pt)")
 
     return parser

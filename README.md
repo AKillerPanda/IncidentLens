@@ -42,10 +42,10 @@ The agent doesn't just say "this is malicious" — it says *"this flow has 47x t
 
 - **Autonomous Multi-Step Investigation** — An LLM agent with 19 specialized tools iterates through detection → analysis → explanation → severity assessment → recommendation, streaming each reasoning step in real time
 - **Temporal Graph Construction** — Sliding-window graph builder converts raw packets into PyG `Data` objects with node features (degree, traffic volume) and edge features (packet count, bytes, payload, inter-arrival time)
-- **Dual GNN Architecture** — EdgeGNN (GraphSAGE + Edge MLP) for static classification and EvolveGCN-O (LSTM-evolved weights) for capturing temporal attack patterns
+- **Dual GNN Architecture** — EdgeGNN (GraphSAGE + Edge MLP) for static classification, EvolveGCN-O (LSTM-evolved weights) for temporal patterns, and Neural ODE variant (EvolvingGNN_ODE with RK4 solver) for continuous-time weight evolution
 - **Counterfactual Analysis** — Feature-level diffs ("what would need to change?") and graph-level edge perturbation ("which connections drive the anomaly?")
 - **Real-Time WebSocket Streaming** — Every thinking step, tool call, and conclusion is streamed to the frontend as it happens
-- **Interactive Investigation Dashboard** — React 19 + Vite 6 frontend with a 4-step guided wizard (Overview → ES Logs → Network Graph → Counterfactual Explainability), shadcn/ui components, Tailwind v4 dark theme, 12 typed React hooks with mock fallback, and 20 typed API functions
+- **Interactive Investigation Dashboard** — React 19 + Vite 6 frontend with Error Boundary, a 4-step guided wizard (Overview → ES Logs → Network Graph → Counterfactual Explainability), shadcn/ui components, Tailwind v4 dark theme, 12 typed React hooks with mock fallback, and 20 typed API functions
 - **Kitsune Dataset Validated** — Tested on 4M+ real SSDP flood attack packets with ground-truth labels
 
 ---
@@ -211,7 +211,7 @@ IncidentLens/
 │   │   ├── index.html                   # HTML entry point
 │   │   ├── app/
 │   │   │   ├── main.tsx                 # React 19 root mount
-│   │   │   ├── App.tsx                  # RouterProvider + Toaster
+│   │   │   ├── App.tsx                  # ErrorBoundary + RouterProvider + Toaster
 │   │   │   ├── routes.tsx               # Route definitions
 │   │   │   ├── types.ts                 # Shared UI + backend response types
 │   │   │   ├── services/api.ts          # Typed fetch client + WebSocket stream
@@ -321,10 +321,10 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 
 - **Vectorized graph construction** — Pure numpy sliding-window builder with composite key packing, broadcast window assignment, and pre-built neighbor lists. Zero Python for-loops over packets. `build_edge_index()` uses pre-allocated numpy arrays; `build_window_data()` uses `argsort`+`searchsorted` for window splitting.
 - **Vectorized analysis** — Edge perturbation counterfactuals use batch `(T,F)` matrix ops and sum-of-squares update formulas instead of per-edge recomputation. Window comparison, anomalous/normal window finding, and severity z-scores all use numpy vectorized operations.
-- **Dual GNN models** — EdgeGNN (GraphSAGE + Edge MLP) for static edge classification; EvolveGCN-O (LSTM-evolved GCN weights) for temporal pattern detection across graph sequences.
+- **Dual GNN models** — EdgeGNN (GraphSAGE + Edge MLP) for static edge classification; EvolveGCN-O (LSTM-evolved GCN weights) for temporal pattern detection; Neural ODE variant (RK4 default) for continuous-time weight evolution.
 - **Pre-processed GNN bottleneck removal** — Self-loops and degree normalization cached at data-prep time; LSTM weight evolution flattened from O(hidden_dim) batches to O(1).
 - **ES-native analytics** — Runtime severity fields (Painless scripts), ILM lifecycle policies, ingest pipelines for NaN cleanup, index templates, composite aggregations with cursor pagination, search_after + PIT pagination, and full-text counterfactual narrative search.
-- **Singleton ES client** with retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead.
+- **Singleton ES client** with thread-safe initialization, retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead. Checkpoint loading uses `weights_only=True` to prevent arbitrary code execution.
 - **166 tests** covering graph construction, GNN forward/backward passes, temporal sequences, normalization, and edge-case handling — all passing.
 - **Full-stack integration** — Typed API service layer (`services/api.ts`) with 20 typed functions (19 REST + 1 WebSocket async-generator), and 12 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`, `useSeverityBreakdown`, `useMLAnomalies`, `useMLInfluencers`, `useCounterfactualSearch`) that try the live backend first and fall back to mock data for offline development.
 - **Zero-config dev proxy** — Vite dev server on `:5173` proxies `/api` and `/ws` to the FastAPI backend on `:8000`, so frontend and backend can be developed and run simultaneously with no CORS issues.

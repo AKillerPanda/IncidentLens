@@ -55,7 +55,7 @@ DEFAULT_CHUNK_SIZE = 100_000
 
 def _safe_val(v):
     """Convert numpy / pandas scalars to JSON-safe Python types."""
-    if v is None or (isinstance(v, float) and math.isnan(v)):
+    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return None
     if isinstance(v, (np.integer,)):
         return int(v)

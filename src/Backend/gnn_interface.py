@@ -194,7 +194,16 @@ class BaseGNNEncoder(ABC, nn.Module):
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {path}")
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        # Validate checkpoint dimensions match model
+        for dim_key in ("node_in_dim", "edge_in_dim", "embedding_dim"):
+            ckpt_val = checkpoint.get(dim_key)
+            model_val = getattr(self, dim_key, None)
+            if ckpt_val is not None and model_val is not None and ckpt_val != model_val:
+                raise ValueError(
+                    f"Checkpoint {dim_key}={ckpt_val} does not match "
+                    f"model {dim_key}={model_val}"
+                )
         self.load_state_dict(checkpoint["state_dict"], strict=strict)
 
 
@@ -275,7 +284,7 @@ def compute_class_weights(graphs: list[Data]) -> torch.Tensor:
     all_labels = torch.cat(label_tensors).long()
     num_classes = max(int(all_labels.max()) + 1, 2)  # at least 2 classes
     counts = torch.bincount(all_labels, minlength=num_classes).float()
-    counts[counts == 0] = 1.0  # avoid division by zero
-    present = (counts > 0).sum().item()
+    present = (counts > 0).sum().item()  # count before zero-fill
+    counts = counts.clamp(min=1.0)  # avoid division by zero
     weights = counts.sum() / (present * counts)
     return weights

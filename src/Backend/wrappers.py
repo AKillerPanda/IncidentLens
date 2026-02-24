@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import threading
 import time
 from typing import Any, Optional
 
@@ -79,6 +80,7 @@ def get_gnn_encoder() -> Optional[BaseGNNEncoder]:
 # ──────────────────────────────────────────────
 
 _client: Optional[Elasticsearch] = None
+_client_lock = threading.Lock()
 
 
 def get_client(
@@ -91,17 +93,22 @@ def get_client(
     """Return a reusable Elasticsearch client (singleton).
 
     Avoids repeated instantiation per SDK best-practices.
+    Thread-safe via lock to prevent duplicate instantiation under
+    concurrent ``asyncio.to_thread`` workers.
     """
     global _client
     if _client is not None:
         return _client
 
-    _client = Elasticsearch(
-        host,
-        request_timeout=timeout,
-        max_retries=max_retries,
-        retry_on_timeout=retry_on_timeout,
-    )
+    with _client_lock:
+        if _client is not None:
+            return _client
+        _client = Elasticsearch(
+            host,
+            request_timeout=timeout,
+            max_retries=max_retries,
+            retry_on_timeout=retry_on_timeout,
+        )
     return _client
 
 
@@ -497,34 +504,41 @@ def search_with_pagination(
     es = es or get_client()
 
     # Open a PIT if none provided
+    opened_here = False
     if pit_id is None:
         pit_resp = es.open_point_in_time(index=FLOWS_INDEX, keep_alive="2m")
         pit_id = pit_resp["id"]
+        opened_here = True
 
-    body: dict[str, Any] = {
-        "size": size,
-        "query": query or {"match_all": {}},
-        "pit": {"id": pit_id, "keep_alive": "2m"},
-        "sort": [{"timestamp": "desc"}, {"_shard_doc": "asc"}],
-    }
-    if search_after:
-        body["search_after"] = search_after
+    try:
+        body: dict[str, Any] = {
+            "size": size,
+            "query": query or {"match_all": {}},
+            "pit": {"id": pit_id, "keep_alive": "2m"},
+            "sort": [{"timestamp": "desc"}, {"_shard_doc": "asc"}],
+        }
+        if search_after:
+            body["search_after"] = search_after
 
-    resp = es.search(body=body)
-    hits = resp["hits"]["hits"]
-    docs = []
-    for h in hits:
-        doc = h["_source"]
-        doc["_id"] = h["_id"]
-        docs.append(doc)
+        resp = es.search(body=body)
+        hits = resp["hits"]["hits"]
+        docs = []
+        for h in hits:
+            doc = h["_source"]
+            doc["_id"] = h["_id"]
+            docs.append(doc)
 
-    last_sort = hits[-1]["sort"] if hits else None
-    return {
-        "hits": docs,
-        "pit_id": pit_id,
-        "search_after": last_sort,
-        "total": resp["hits"]["total"]["value"],
-    }
+        last_sort = hits[-1]["sort"] if hits else None
+        return {
+            "hits": docs,
+            "pit_id": pit_id,
+            "search_after": last_sort,
+            "total": resp["hits"]["total"]["value"],
+        }
+    except Exception:
+        if opened_here:
+            close_pit(pit_id, es=es)
+        raise
 
 
 def close_pit(pit_id: str, es: Elasticsearch | None = None) -> bool:
@@ -533,7 +547,8 @@ def close_pit(pit_id: str, es: Elasticsearch | None = None) -> bool:
     try:
         es.close_point_in_time(body={"id": pit_id})
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to close PIT %s: %s", pit_id, exc)
         return False
 
 
@@ -799,8 +814,8 @@ def index_pyg_graph(
     # ── Batch IP lookup (keep as Python lists — faster per-element access) ──
     src_ids = edge_index[0]
     dst_ids = edge_index[1]
-    src_ips = [node_id_to_ip.get(int(s), f"0.0.0.{s}") for s in src_ids]
-    dst_ips = [node_id_to_ip.get(int(d), f"0.0.0.{d}") for d in dst_ids]
+    src_ips = [node_id_to_ip.get(int(s), f"10.{(int(s) >> 16) & 0xFF}.{(int(s) >> 8) & 0xFF}.{int(s) & 0xFF}") for s in src_ids]
+    dst_ips = [node_id_to_ip.get(int(d), f"10.{(int(d) >> 16) & 0xFF}.{(int(d) >> 8) & 0xFF}.{int(d) & 0xFF}") for d in dst_ids]
 
     # ── Batch flow-ID generation ──
     flow_ids = _flow_ids_batch(wid, src_ips, dst_ips, n_edges)
@@ -1603,7 +1618,7 @@ def compute_counterfactual_diff(
             continue
         orig_f, cf_f = float(orig), float(cf_val)
         abs_diff = abs(orig_f - cf_f)
-        pct = (abs_diff / abs(orig_f) * 100) if orig_f != 0 else 99999.99
+        pct = min((abs_diff / abs(orig_f) * 100), 99999.99) if orig_f != 0 else 99999.99
         direction = "decrease" if cf_f < orig_f else "increase" if cf_f > orig_f else "unchanged"
         diffs.append({
             "feature": feat,

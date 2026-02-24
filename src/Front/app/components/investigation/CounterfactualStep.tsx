@@ -5,7 +5,7 @@ import { Badge } from '../ui/badge';
 import { Separator } from '../ui/separator';
 import { Progress } from '../ui/progress';
 import { Brain, ArrowRight, CheckCircle2, AlertCircle, Home } from 'lucide-react';
-import { CounterfactualExplanation } from '../../data/mockData';
+import { CounterfactualExplanation } from '../../types';
 import { Link } from 'react-router';
 
 interface CounterfactualStepProps {
@@ -159,7 +159,7 @@ export function CounterfactualStep({ data }: CounterfactualStepProps) {
                   {insights.map((insight, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <CheckCircle2 className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
-                      <span dangerouslySetInnerHTML={{ __html: insight.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }} />
+                      <span>{insight.split(/\*\*(.*?)\*\*/g).map((part, idx) => idx % 2 === 1 ? <strong key={idx}>{part}</strong> : part)}</span>
                     </li>
                   ))}
                 </ul>
