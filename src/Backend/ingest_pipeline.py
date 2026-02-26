@@ -520,9 +520,18 @@ def run_pipeline(
         print("\n[5/8] Indexing aggregated flows ...")
         flow_count = index_all_graphs(graphs, id_to_ip, es)
         report["flows_indexed"] = flow_count
+        # Index graph-level summaries (spectral + structural metrics)
+        try:
+            n_summaries = wrappers.index_graph_summaries(graphs, es=es)
+            print(f"  Graph summaries indexed: {n_summaries}")
+            report["graph_summaries_indexed"] = n_summaries
+        except Exception as exc:
+            print(f"  [WARN] Graph summary indexing failed: {exc}")
+            report["graph_summaries_indexed"] = 0
     else:
         print("\n[5/8] Skipping flow indexing (no graphs).")
         report["flows_indexed"] = 0
+        report["graph_summaries_indexed"] = 0
 
     # --- 6. Embeddings ---
     flow_ids: list[str] = []

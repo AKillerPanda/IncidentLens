@@ -196,25 +196,18 @@ def _tool_significant_terms(
 def _tool_counterfactual(flow_id: str, **kwargs) -> dict:
     """Find the nearest normal flow and compute feature diffs.
 
-    Uses ES msearch to batch the embedding + flow doc retrieval into
-    a single HTTP round-trip (down from 2 sequential calls).
+    Retrieves the flow's embedding from ES, finds the nearest normal
+    neighbour via kNN, then computes per-feature diffs.
     """
     es = wrappers.get_client()
 
-    # Batch: fetch embedding + anomalous flow doc in one round-trip via msearch
+    # Fetch the embedding for this flow
     try:
-        resp = es.msearch(body=[
-            {"index": wrappers.EMBEDDINGS_INDEX},
-            {"query": {"term": {"flow_id": flow_id}}, "size": 1},
-            {"index": wrappers.FLOWS_INDEX},
-            {"query": {"term": {"_id": flow_id}}, "size": 1},
-        ])
-        emb_hits = resp["responses"][0]["hits"]["hits"]
-    except Exception:
-        # Fallback: sequential search if msearch fails
         body = {"query": {"term": {"flow_id": flow_id}}, "size": 1}
         emb_resp = es.search(index=wrappers.EMBEDDINGS_INDEX, body=body)
         emb_hits = emb_resp["hits"]["hits"]
+    except Exception:
+        emb_hits = []
 
     if not emb_hits:
         return {"error": f"No embedding found for flow {flow_id}"}

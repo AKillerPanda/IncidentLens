@@ -1318,8 +1318,6 @@ def generate_embeddings(
     all_flow_ids: list[str] = []
     for chunk in fid_chunks:
         all_flow_ids.extend(chunk)
-    # Flatten with single-pass iteration (avoids intermediate lists)
-    import itertools as _itertools
     all_labels = np.concatenate(label_chunks).tolist()
 
     # ══════════════════════════════════════════════════════

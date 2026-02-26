@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ────────────────────────────────────────────
+  # Backend: lint + test
+  # ────────────────────────────────────────────
+  backend-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install PyTorch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install torch-geometric (CPU)
+        run: |
+          pip install torch-geometric \
+            -f https://data.pyg.org/whl/torch-2.6.0+cpu.html
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify all module imports
+        run: |
+          python -c "
+          import src.Backend.graph
+          import src.Backend.graph_data_wrapper
+          import src.Backend.gnn_interface
+          import src.Backend.temporal_gnn
+          import src.Backend.agent_tools
+          import src.Backend.agent
+          import src.Backend.server
+          import src.Backend.cli
+          import src.Backend.csv_to_json
+          import src.Backend.ingest_pipeline
+          import src.Backend.train
+          import src.Backend.wrappers
+          print('All imports OK')
+          "
+
+      - name: Run tests
+        run: |
+          python -m pytest src/Backend/tests/ \
+            -v --tb=short -x \
+            --ignore=src/Backend/tests/testingentry.py
+
+  # ────────────────────────────────────────────
+  # Frontend: type-check + build
+  # ────────────────────────────────────────────
+  frontend-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: src/Front
+        run: npm ci
+
+      - name: Type check
+        working-directory: src/Front
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: src/Front
+        run: npm run build
+
+  # ────────────────────────────────────────────
+  # Docker: verify Dockerfiles build
+  # ────────────────────────────────────────────
+  docker-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile.backend
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile.backend
+          failure-threshold: warning
+
+      - name: Lint Dockerfile.frontend
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile.frontend
+          failure-threshold: warning

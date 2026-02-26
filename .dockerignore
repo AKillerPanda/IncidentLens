@@ -1,0 +1,75 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.venv/
+venv/
+*.egg
+
+# =========================
+# Node / Frontend build artifacts
+# =========================
+node_modules/
+src/Front/node_modules/
+src/Front/dist/
+src/Front/.vite/
+
+# =========================
+# Data (raw / large files)
+# =========================
+*.csv
+*.csv.gz
+*.pcap
+*.pcapng
+*.gz
+*.zip
+datasets/
+
+# =========================
+# Git / VCS
+# =========================
+.git/
+.gitignore
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Docs / non-essential
+# =========================
+*.md
+LICENSE
+EDA/
+AUDIT_REPORT.md
+
+# =========================
+# Docker volumes
+# =========================
+esdata/
+
+# =========================
+# Tests (not needed in image)
+# =========================
+src/Backend/tests/
+src/Backend/backup/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Misc
+# =========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

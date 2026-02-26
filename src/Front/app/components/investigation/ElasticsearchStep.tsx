@@ -13,7 +13,7 @@ interface ElasticsearchStepProps {
       message: string;
       level: string;
     }>;
-    query: any;
+    query: Record<string, unknown>;
   };
   onNext: () => void;
 }

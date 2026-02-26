@@ -8,12 +8,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Install PyTorch CPU-only first (smaller image, no CUDA)
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install torch-geometric with CPU wheels
+RUN pip install --no-cache-dir \
+    torch-geometric \
+    -f https://data.pyg.org/whl/torch-2.6.0+cpu.html
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the FastAPI server via the CLI entry point
 CMD ["python", "-m", "src.Backend.server"]

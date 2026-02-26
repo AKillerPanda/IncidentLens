@@ -164,8 +164,10 @@ def apply_normalization(graphs: list[Data], stats: dict) -> list[Data]:
     nm, ns = stats["node_mean"], stats["node_std"]
     em, es = stats["edge_mean"], stats["edge_std"]
     for g in graphs:
-        g.x = (g.x - nm) / ns
-        g.edge_attr = (g.edge_attr - em) / es
+        if g.x is not None:
+            g.x = (g.x - nm) / ns
+        if g.edge_attr is not None:
+            g.edge_attr = (g.edge_attr - em) / es
     return graphs
 
 

@@ -395,6 +395,7 @@ def build_sliding_window_graphs(
         data = Data(edge_index=ei, x=node_feats, num_nodes=n_local)
         data.edge_attr = torch.from_numpy(feat_arr[idx])
         data.y = torch.from_numpy(label_arr[idx])
+        data.window_id = w
         data.window_start = float(window_starts[w]) if w < len(window_starts) else 0.0
         data.network = net
         # Store per-window local→global IP mapping so callers can
