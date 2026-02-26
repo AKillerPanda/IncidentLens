@@ -121,6 +121,13 @@ def load_ndjson_files(
             break
 
     df = pd.concat(chunks, ignore_index=True)
+
+    # pd.read_json auto-parses Unix-epoch floats as datetime64[ns].
+    # Convert back to float64 so downstream code (ES indexing, graph
+    # building sliding-window math) sees numeric seconds.
+    if "timestamp" in df.columns and pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+        df["timestamp"] = df["timestamp"].astype("int64") / 1e9
+
     print(f"Loaded {len(df):,} rows, columns: {df.columns.tolist()}")
     return df
 
@@ -184,9 +191,14 @@ def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Replace NaN/inf at the DataFrame level (vectorised, much faster
     than per-row _clean_doc for large datasets)."""
     df = df.copy()
-    # Replace inf/-inf with NaN first, then NaN with None
+    # Replace inf/-inf with NaN first
     df = df.replace([np.inf, -np.inf], np.nan)
-    # .where keeps non-NaN values; NaN becomes None
+    # Convert float columns to object dtype so NaN → None sticks
+    # (.where with other=None on float cols casts None back to NaN)
+    for col in df.columns:
+        if df[col].dtype.kind == 'f':          # float columns
+            df[col] = df[col].astype(object)
+    # Now .where correctly sets NaN positions to None
     return df.where(df.notna(), other=None)
 
 
