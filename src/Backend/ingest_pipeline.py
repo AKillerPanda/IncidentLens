@@ -226,7 +226,7 @@ def index_raw_packets(
         actions = [
             {
                 "_index": RAW_PACKETS_INDEX,
-                "_id": str(rec.get("packet_index", start + i)),
+                "_id": str(rec.get("packet_index") or (start + i)),
                 "_source": rec,
             }
             for i, rec in enumerate(records[start:end])

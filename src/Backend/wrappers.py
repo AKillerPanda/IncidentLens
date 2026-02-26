@@ -1828,7 +1828,7 @@ def compute_counterfactual_diff(
     valid = ~(np.isnan(orig) | np.isnan(cf))
     abs_diff = np.abs(orig - cf)
     denom = np.abs(orig).copy()
-    denom[denom == 0] = 1e-99
+    denom[denom == 0] = 1e-9
     pct = np.minimum(abs_diff / denom * 100, 99999.99)
     dirs = np.where(cf < orig, "decrease", np.where(cf > orig, "increase", "unchanged"))
     diffs = sorted([

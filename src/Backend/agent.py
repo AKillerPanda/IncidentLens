@@ -192,12 +192,16 @@ class IncidentAgent:
                 yield tool_call_event(fn_name, fn_args)
 
                 # Run tool with timeout to avoid blocking on slow ES / network
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
                     future = pool.submit(agent_tools.dispatch, fn_name, fn_args)
                     try:
                         result_str = future.result(timeout=self.config.tool_timeout)
                     except concurrent.futures.TimeoutError:
                         result_str = json.dumps({"error": f"Tool '{fn_name}' timed out after {self.config.tool_timeout}s"})
+                finally:
+                    # wait=False so a stuck tool doesn't block the investigation
+                    pool.shutdown(wait=False, cancel_futures=True)
 
                 yield tool_result_event(fn_name, result_str)
 

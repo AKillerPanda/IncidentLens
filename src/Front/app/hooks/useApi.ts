@@ -248,7 +248,11 @@ export function useInvestigationStream() {
         setError(String(e));
       }
     } finally {
-      setRunning(false);
+      // Only reset if this is still the active controller
+      // (prevents old stream's cleanup from clobbering a new stream)
+      if (abortRef.current === controller) {
+        setRunning(false);
+      }
     }
   }, []);
 

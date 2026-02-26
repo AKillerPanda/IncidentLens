@@ -4,7 +4,7 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY src/Front/package.json src/Front/package-lock.json* ./
-RUN npm install
+RUN npm ci
 
 COPY src/Front/ .
 

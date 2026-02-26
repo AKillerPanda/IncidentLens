@@ -855,10 +855,16 @@ class TemporalGNNEncoder(BaseGNNEncoder):
     # ── Buffer management ──
 
     def _preprocess_single(self, graph: Data) -> Data:
-        """Sanitize + normalize + preprocess a single raw graph for inference."""
-        g = preprocess_graph(sanitize_graph(graph.clone()))
+        """Sanitize + recompute + normalize + preprocess a single raw graph for inference.
+
+        Mirrors the training pipeline order in ``_postprocess_graphs``:
+        sanitize -> recompute_node_features -> normalize -> preprocess.
+        """
+        g = sanitize_graph(graph.clone())
+        g = recompute_node_features(g)
         if self.norm_stats is not None:
             g = apply_normalization([g], self.norm_stats)[0]
+        g = preprocess_graph(g)
         return g
 
     def push_graph(self, graph: Data) -> None:

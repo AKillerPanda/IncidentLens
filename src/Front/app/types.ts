@@ -45,7 +45,7 @@ export interface ElasticsearchData {
     message: string;
     level: string;
   }>;
-  query: unknown;
+  query: Record<string, unknown>;
 }
 
 export interface NetworkGraphData {

@@ -46,9 +46,11 @@ Data is fetched from the live FastAPI backend via typed hooks. If the backend is
 
 ```bash
 cd src/Front
-npm install
+npm install          # first time setup
 npm run dev          # → http://localhost:5173
 ```
+
+> **Docker / CI:** use `npm ci` instead of `npm install` for deterministic, lockfile-only installs.
 
 The Vite dev server proxies `/api` and `/ws` to `http://localhost:8000` (the FastAPI backend). Both servers can run simultaneously.
 
@@ -174,7 +176,7 @@ interface CounterfactualChange {
 interface ElasticsearchData {
   totalHits: number;
   logs: Array<{ timestamp: string; source: string; message: string; level: string }>;
-  query: unknown;
+  query: Record<string, unknown>;
 }
 
 interface NetworkGraphData {
@@ -265,7 +267,7 @@ interface AggregationResponse { buckets: AggregationBucket[]; after_key?: Record
 | `getMLInfluencers(jobId?, minScore?)` | `GET /api/ml/influencers` | `MLInfluencersResponse` |
 | `investigateStream(query, signal?)` | `WS /ws/investigate` | `AsyncGenerator<InvestigationEvent>` |
 
-`investigateStream()` is a WebSocket **async generator** — use it with `for await...of`. It includes JSON parse error handling, properly restores the `onerror` handler after connection succeeds, and closes the WebSocket after receiving a `\"done\"` event:
+`investigateStream()` is a WebSocket **async generator** — use it with `for await...of`. It includes JSON parse error handling, properly restores the `onerror` handler after connection succeeds, closes the WebSocket after receiving a `"done"` event, and **rethrows any WebSocket error after draining all buffered messages** (so no events are silently lost):
 
 ```typescript
 for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
@@ -294,7 +296,7 @@ for await (const event of investigateStream("Why is 10.0.2.45 anomalous?")) {
 | `useMLInfluencers(jobId?, minScore?)` | `GET /api/ml/influencers` | — | `MLInfluencersResponse \| null` |
 | `useCounterfactualSearch(query)` | `GET /api/counterfactuals/search` | — | `CounterfactualSearchResponse \| null` |
 
-> **Cleanup:** `useInvestigationStream` aborts the WebSocket connection on component unmount via a `useEffect` cleanup function.
+> **Cleanup:** `useInvestigationStream` aborts the WebSocket connection on component unmount via a `useEffect` cleanup function. The `finally` block guards against race conditions by checking `abortRef.current === controller` before clearing `running` state — this prevents a stale abort controller from resetting state for a newer stream.
 
 **Mock fallback pattern:** Every data hook wraps its API call in `try/catch`. If the backend is unreachable, it falls back to the mock data in `data/mockData.ts`. This enables full offline UI development.
 

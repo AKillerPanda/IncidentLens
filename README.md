@@ -197,12 +197,15 @@ IncidentLens/
 │   │   ├── backup/                     # Earlier model versions kept for reference
 │   │   │   ├── temporal_gnn_v1_backup.py
 │   │   │   └── __init__.py
-│   │   └── tests/                      # 166 tests (100% pass)
+│   │   └── tests/                      # 316 tests (100% pass)
 │   │       ├── testingentry.py         # Actual CLI implementation (5 commands)
-│   │       ├── test_gnn_edge_cases.py
-│   │       ├── test_temporal_gnn_full.py
-│   │       ├── test_temporal_gnn_meticulous.py
-│   │       ├── run_all.py              # Test suite runner
+│   │       ├── test_gnn_edge_cases.py  # Graph construction, GNN, normalization
+│   │       ├── test_temporal_gnn_full.py  # EvolveGCN-O training, temporal sequences
+│   │       ├── test_temporal_gnn_meticulous.py  # Edge-case coverage
+│   │       ├── test_csv_to_json.py     # CSV converter: safe_val, merge, NDJSON, metadata
+│   │       ├── test_agent_tools.py     # Agent tool registry, dispatch, sanitization
+│   │       ├── test_e2e_pipeline.py    # Full pipeline: CSV→graphs→GNN→predict
+│   │       ├── run_all.py              # Unified test runner (unittest + pytest)
 │   │       └── __init__.py
 │   ├── Front/                          # React frontend
 │   │   ├── package.json                 # Dependencies + scripts (dev, build, preview)
@@ -228,8 +231,12 @@ IncidentLens/
 │   │   ├── styles/                      # Tailwind v4 + oklch theme tokens
 │   │   ├── vite-env.d.ts                # Vite type references
 │   │   └── __init__.py
-│   └── docker-compose.yml               # ES 8.12 + Kibana 8.12
+│   └── docker-compose.yml               # ES 8.12 + Kibana 8.12 + backend + frontend
+├── .github/workflows/ci.yml             # GitHub Actions CI (backend-test, frontend-build, docker-lint)
+├── .dockerignore                        # Excludes .venv, node_modules, tests, data from Docker builds
 ├── .gitignore                           # Ignores .venv, __pycache__, dist/, node_modules/, *.csv
+├── Dockerfile.backend                   # Python 3.12-slim + torch 2.6.0 CPU + healthcheck
+├── Dockerfile.frontend                  # Node 20-alpine build → nginx:alpine serve
 ├── data/                                # NDJSON data files
 ├── EDA/                                 # Exploratory data analysis (Jupyter notebooks)
 │   └── EDA.ipynb                        # Dataset profiling and visualization
@@ -324,8 +331,11 @@ Event types: `thinking`, `tool_call`, `tool_result`, `conclusion`, `error`, `sta
 - **Dual GNN models** — EdgeGNN (GraphSAGE + Edge MLP) for static edge classification; EvolveGCN-O (LSTM-evolved GCN weights) for temporal pattern detection; Neural ODE variant (RK4 default) for continuous-time weight evolution.
 - **Pre-processed GNN bottleneck removal** — Self-loops and degree normalization cached at data-prep time; LSTM weight evolution flattened from O(hidden_dim) batches to O(1).
 - **ES-native analytics** — Runtime severity fields (Painless scripts), ILM lifecycle policies, ingest pipelines for NaN cleanup, index templates, composite aggregations with cursor pagination, search_after + PIT pagination, and full-text counterfactual narrative search.
-- **Singleton ES client** with thread-safe initialization, retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead. Checkpoint loading uses `weights_only=True` to prevent arbitrary code execution.
-- **166 tests** covering graph construction, GNN forward/backward passes, temporal sequences, normalization, and edge-case handling — all passing.
+- **Singleton ES client** with thread-safe initialization (`threading.Lock`), retry logic, bulk indexing with batch MD5 flow-ID generation, and pre-converted numpy→Python type coercion for minimal per-document overhead. Checkpoint loading uses `weights_only=True` to prevent arbitrary code execution.
+- **Thread-safe caching** — detect results cache and feature-stats cache both protected by `threading.Lock`, with TOCTOU-safe read-check-compute-write inside the lock.
+- **CI/CD pipeline** — GitHub Actions with 3 jobs: backend tests (Python 3.12, CPU PyTorch 2.6.0 + PyG), frontend build (Node 20, TypeScript check, Vite build), Docker lint (hadolint).
+- **Docker hardened** — `.dockerignore` excludes test/dev files, backend Dockerfile has `HEALTHCHECK`, `torch==2.6.0` pinned, frontend uses `npm ci` for deterministic builds, Compose uses `condition: service_healthy` for service ordering.
+- **316 tests** (95 unittest + 221 pytest) across 6 test suites — covering graph construction, GNN forward/backward passes, temporal sequences, normalization, edge-case handling, CSV-to-JSON conversion, agent tool dispatch/registry/sanitization, and full end-to-end pipeline integration — all passing. CI/CD via GitHub Actions (backend tests, frontend build, Docker lint).
 - **Full-stack integration** — Typed API service layer (`services/api.ts`) with 20 typed functions (19 REST + 1 WebSocket async-generator), and 12 React hooks (`useBackendHealth`, `useIncidents`, `useIncident`, `useElasticsearchData`, `useNetworkGraph`, `useCounterfactual`, `useSeverity`, `useInvestigationStream`, `useSeverityBreakdown`, `useMLAnomalies`, `useMLInfluencers`, `useCounterfactualSearch`) that try the live backend first and fall back to mock data for offline development.
 - **Zero-config dev proxy** — Vite dev server on `:5173` proxies `/api` and `/ws` to the FastAPI backend on `:8000`, so frontend and backend can be developed and run simultaneously with no CORS issues.
 

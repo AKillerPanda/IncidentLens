@@ -11,13 +11,13 @@ Developer reference for the Python backend powering IncidentLens.
 | **main.py** | CLI shim — imports `main()` from `tests/testingentry.py` (ensures `src.Backend.*` path resolution) |
 | **tests/testingentry.py** | Actual CLI implementation — `health`, `ingest`, `investigate`, `serve`, `convert` |
 | **agent.py** | LLM agent orchestrator: multi-step reasoning loop with OpenAI tool-calling. After processing tool calls the loop continues automatically (no redundant `finish_reason` check) |
-| **agent_tools.py** | 19 tools exposed to the agent (ES queries, counterfactuals, severity, graph analysis, ML anomalies, severity breakdown, CF search). Includes `_STATS_CACHE` (30 s TTL), `_GRAPH_CACHE`, `set_graph_cache()`, and `_sanitize_for_json()` helper (handles `np.bool_`, `np.integer`, `np.floating`, NaN/Inf). Validates window indices with negative-value rejection. Severity z-score computation fully numpy-vectorised |
-| **server.py** | FastAPI server (v0.2.0) — 21 REST endpoints + 1 WebSocket. Includes 7 ES-native analytics endpoints (severity breakdown, runtime severity search, paginated search, CF text search, composite aggregation, ML anomalies, ML influencers). Proper HTTP error codes (502/404). Uses `asyncio.to_thread` for non-blocking ES calls. Thread-safe singletons (`_get_agent`, `_cached_detect` via `threading.Lock`). Aggregate endpoint has field whitelist. CORS origins read from `INCIDENTLENS_CORS_ORIGINS` env var. Also runnable directly via `python server.py` (`if __name__` block uses `src.Backend.server:app` import path) |
+| **agent_tools.py** | 19 tools exposed to the agent (ES queries, counterfactuals, severity, graph analysis, ML anomalies, severity breakdown, CF search). Includes thread-safe `_STATS_CACHE` (30 s TTL, `threading.Lock`), `_GRAPH_CACHE`, `set_graph_cache()`, and `_sanitize_for_json()` helper (handles `np.bool_`, `np.integer`, `np.floating`, NaN/Inf). Validates window indices with negative-value rejection. Severity z-score computation fully numpy-vectorised |
+| **server.py** | FastAPI server (v0.2.0) — 21 REST endpoints + 1 WebSocket. Includes 7 ES-native analytics endpoints (severity breakdown, runtime severity search, paginated search, CF text search, composite aggregation, ML anomalies, ML influencers). Proper HTTP error codes (502/404). Uses `asyncio.to_thread` for non-blocking ES calls. Thread-safe singletons (`_get_agent`, `_cached_detect` via `threading.Lock` with TOCTOU-safe read-compute-write inside lock). Aggregate endpoint has field whitelist. CORS origins read from `INCIDENTLENS_CORS_ORIGINS` env var. `reload` conditional on `INCIDENTLENS_DEV` env var (off by default for production). Also runnable directly via `python server.py` (`if __name__` block uses `src.Backend.server:app` import path) |
 | **wrappers.py** | Singleton ES client with thread-safe initialization (`threading.Lock`) (1 962 lines, 53 functions). Index management, bulk flow/embedding ingestion, kNN search, counterfactual diff, ML jobs. PIT leak protection (try/finally on search_with_pagination). New ES-native features: ILM policies, ingest pipelines (NaN cleanup), index templates, runtime severity fields (Painless), search_after + PIT pagination, composite aggregations, full-text CF search. `generate_embeddings()` auto-corrects `embedding_dim` to match actual GNN output dimensions. Fallback IPs use valid 10.x.x.x encoding for large node IDs |
 | **graph_data_wrapper.py** | Vectorised sliding-window graph builder — pure numpy, zero Python for-loops over packets. Counterfactual tools use batch `(T,F)` matrix ops and sum-of-squares update formulas. Window finding uses `np.argmax`/`np.argmin` |
 | **graph.py** | Core graph data structures (`node`, `network`), snapshot dataset builder. `build_edge_index()` uses numpy pre-allocated arrays. `build_window_data()` uses `argsort`+`searchsorted` for vectorised window splitting with `window_start` temporal field |
 | **train.py** | EdgeGNN (GraphSAGE + Edge MLP) training pipeline with class-imbalance handling |
-| **temporal_gnn.py** | EvolveGCN-O — semi-temporal GNN with LSTM-evolved weights for sequence-level detection. Neural ODE variant (`EvolvingGNN_ODE`) with RK4 default. `recompute_node_features()` initialises 6-dim zero-valued features when edge_attr is insufficient. Checkpoint loading uses `weights_only=True` for security |
+| **temporal_gnn.py** | EvolveGCN-O — semi-temporal GNN with LSTM-evolved weights for sequence-level detection. Neural ODE variant (`EvolvingGNN_ODE`) with RK4 default. `_preprocess_single()` follows training pipeline order: sanitize → recompute_node_features → normalize → preprocess. `recompute_node_features()` initialises 6-dim zero-valued features when edge_attr is insufficient. Checkpoint loading uses `weights_only=True` for security |
 | **gnn_interface.py** | `BaseGNNEncoder` abstract class — the contract any GNN must satisfy to plug into the pipeline. Checkpoint loading validates dimensions and uses `weights_only=True`. `compute_class_weights()` correctly handles unobserved classes |
 | **ingest_pipeline.py** | 8-step data pipeline: load NDJSON → build graphs → index flows → embeddings → counterfactuals. Defines `RAW_PACKETS_INDEX` and `RAW_PACKETS_MAPPING`. Refreshes `incidentlens-*` indices (not `_all`) after indexing |
 | **csv_to_json.py** | Converts raw CSV datasets to chunked NDJSON for the ingest pipeline. `_safe_val` handles NaN, Inf, and numpy scalar types |
@@ -267,16 +267,23 @@ All events also include a `timestamp` field (Unix epoch float).
 ## Running Tests
 
 ```bash
+# Run all pytest tests
 python -m pytest src/Backend/tests/ -v
+
+# Run unified runner (unittest + pytest)
+python src/Backend/tests/run_all.py
 ```
 
-166 tests covering graph construction, GNN forward/backward passes, temporal sequences, normalization, collation, and edge cases.
+316 tests (95 unittest + 221 pytest) across 6 test suites:
 
 | Test File | Focus |
 |:----------|:------|
 | `test_gnn_edge_cases.py` | Graph construction, GNN forward/backward, normalization, collation |
 | `test_temporal_gnn_full.py` | EvolveGCN-O training, temporal sequences, snapshot preparation |
 | `test_temporal_gnn_meticulous.py` | Edge-case coverage for LSTM weight evolution, empty graphs, single-node graphs |
+| `test_csv_to_json.py` | CSV converter: `_safe_val` NaN/Inf/numpy, merge, NDJSON chunks, metadata, full pipeline |
+| `test_agent_tools.py` | Agent tool registry, dispatch, sanitization, individual tools (5 of 19) |
+| `test_e2e_pipeline.py` | Full pipeline integration: CSV → NDJSON → graphs → preprocess → normalize → GNN forward |
 | `run_all.py` | Unified test runner — loads all suites, prints summary |
 
 ---
@@ -290,7 +297,9 @@ python -m pytest src/Backend/tests/ -v
 | `OPENAI_BASE_URL` | (none) | Custom endpoint (e.g., `http://localhost:11434/v1` for Ollama) |
 | `PORT` | `8000` | Server port |
 | `INCIDENTLENS_CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Comma-separated list of allowed CORS origins |
+| `INCIDENTLENS_DEV` | (none) | Set to `1` or `true` to enable hot-reload in `python server.py` |
 | `INCIDENTLENS_DATA_ROOT` | `data/` | Root directory for NDJSON data files |
+| `ELASTICSEARCH_URL` | `http://localhost:9200` | Elasticsearch endpoint (used in Docker compose) |
 | `INCIDENTLENS_PACKETS_CSV` | `data/ssdp_packets_rich.csv` | Default raw packets CSV path |
 | `INCIDENTLENS_LABELS_CSV` | `data/SSDP_Flood_labels.csv` | Default ground-truth labels CSV path |
 

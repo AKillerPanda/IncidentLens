@@ -57,7 +57,7 @@ export const mockIncidents: Incident[] = [
 export const mockElasticsearchResults: Record<string, {
   totalHits: number;
   logs: Array<{ timestamp: string; source: string; message: string; level: string }>;
-  query: unknown;
+  query: Record<string, unknown>;
 }> = {
   'INC-2026-001': {
     totalHits: 1247,

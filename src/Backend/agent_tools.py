@@ -27,8 +27,10 @@ import src.Backend.wrappers as wrappers
 _REGISTRY: dict[str, Any] = {}
 
 # TTL-based cache for feature stats (avoids repeated ES agg queries)
+import threading as _threading
 _STATS_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _STATS_TTL = 30.0  # seconds
+_STATS_LOCK = _threading.Lock()
 
 
 def _register(name: str):
@@ -523,12 +525,13 @@ def _tool_severity(flow_id: str, **kwargs) -> dict:
 
     # Use cached stats if fresh (avoids ES round-trip on every severity call)
     now = time.time()
-    if _STATS_CACHE["data"] is not None and (now - _STATS_CACHE["ts"]) < _STATS_TTL:
-        stats = _STATS_CACHE["data"]
-    else:
-        stats = wrappers.feature_stats_by_label()
-        _STATS_CACHE["data"] = stats
-        _STATS_CACHE["ts"] = now
+    with _STATS_LOCK:
+        if _STATS_CACHE["data"] is not None and (now - _STATS_CACHE["ts"]) < _STATS_TTL:
+            stats = _STATS_CACHE["data"]
+        else:
+            stats = wrappers.feature_stats_by_label()
+            _STATS_CACHE["data"] = stats
+            _STATS_CACHE["ts"] = now
 
     # Vectorised z-score computation via numpy (single array pass)
     feats = wrappers.FEATURE_FIELDS

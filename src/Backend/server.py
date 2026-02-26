@@ -131,13 +131,12 @@ def _cached_detect(method: str = "label", threshold: float = 0.5, size: int = 50
         if _DETECT_CACHE["data"] is not None and _DETECT_CACHE["key"] == cache_key and (now - _DETECT_CACHE["ts"]) < _DETECT_TTL:
             return _DETECT_CACHE["data"]
 
-    # Call the tool directly (returns dict, not JSON string)
-    result = agent_tools._REGISTRY["detect_anomalies"](method=method, threshold=threshold, size=size)
-    with _DETECT_LOCK:
+        # Compute inside the lock to prevent thundering herd
+        result = agent_tools._REGISTRY["detect_anomalies"](method=method, threshold=threshold, size=size)
         _DETECT_CACHE["data"] = result
         _DETECT_CACHE["ts"] = time.time()
         _DETECT_CACHE["key"] = cache_key
-    return result
+        return result
 
 
 # ──────────────────────────────────────────────
@@ -347,7 +346,9 @@ def _flow_to_incident(flow: dict) -> dict:
     Uses the same severity thresholds as the runtime field — keeping
     Python and ES-level severity always in sync.
     """
-    score = flow.get("prediction_score") or (0.85 if flow.get("label") == 1 else 0.2)
+    score = flow.get("prediction_score")
+    if score is None:
+        score = 0.85 if flow.get("label") == 1 else 0.2
     # Use runtime-computed severity if available, else compute locally
     sev = flow.get("severity_level")
     if not sev:
@@ -764,6 +765,6 @@ if __name__ == "__main__":
         "src.Backend.server:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
+        reload=os.getenv("INCIDENTLENS_DEV", "").lower() in ("1", "true"),
         log_level="info",
     )

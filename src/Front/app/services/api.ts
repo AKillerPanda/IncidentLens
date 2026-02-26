@@ -324,4 +324,6 @@ export async function* investigateStream(
   while (queue.length > 0) {
     yield queue.shift()!;
   }
+  // Surface any error that arrived after the stream closed
+  if (error) throw error;
 }

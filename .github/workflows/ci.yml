@@ -35,7 +35,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pip-
 
       - name: Install PyTorch (CPU)
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install torch-geometric (CPU)
         run: |
