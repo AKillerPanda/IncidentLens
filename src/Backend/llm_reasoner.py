@@ -8,6 +8,9 @@ from openai import OpenAI
 
 import src.Backend.wrappers as wrappers
 
+import smtplib
+from email.message import EmailMessage
+import os
 
 SYSTEM_PROMPT = """
 You are IncidentLens Autonomous Security Analyst.
@@ -26,6 +29,9 @@ Rules:
   - reasoning
   - recommended_action
   - confidence (0.0–1.0)
+
+If risk_level is high or critical, you must call send_email_alert.
+Do not send alerts for low or medium risk.
 """
 
 
@@ -41,6 +47,7 @@ class LLMReasoner:
             "get_graph_summary": self.get_graph_summary,
             "get_severity_breakdown": self.get_severity_breakdown,
             "get_recent_windows": self.get_recent_windows,
+            "send_email_alert": self.send_email_alert,
         }
 
     # ==========================================================
@@ -111,6 +118,22 @@ class LLMReasoner:
                         "properties": {
                             "n": {"type": "integer"}
                         }
+                    }
+                }
+            },
+            {
+            "type": "function",
+            "function": {
+                "name": "send_email_alert",
+                "description": "Send an alert email if risk is high.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "window_id": {"type": "integer"},
+                        "summary": {"type": "string"},
+                        "risk_level": {"type": "string"}
+                    },
+                    "required": ["window_id", "summary", "risk_level"]
                     }
                 }
             },
@@ -191,3 +214,32 @@ class LLMReasoner:
             index="incidentlens-llm-insights",
             document=doc
         )
+
+    def send_email_alert(self, window_id: int, summary: str, risk_level: str):
+        """
+        Send alert email directly via SMTP (no Elasticsearch Watcher).
+        """
+
+        sender = os.getenv("ALERT_EMAIL_SENDER")
+        password = os.getenv("ALERT_EMAIL_PASSWORD")
+        recipient = os.getenv("ALERT_EMAIL_RECIPIENT")
+
+        if not sender or not password or not recipient:
+            return {"status": "email_config_missing"}
+
+        msg = EmailMessage()
+        msg["Subject"] = f"[IncidentLens] {risk_level.upper()} Risk (Window {window_id})"
+        msg["From"] = sender
+        msg["To"] = recipient
+        msg.set_content(summary)
+
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                server.starttls()
+                server.login(sender, password)
+                server.send_message(msg)
+
+            return {"status": "email_sent"}
+
+        except Exception as e:
+            return {"status": "email_failed", "error": str(e)}

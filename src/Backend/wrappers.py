@@ -98,15 +98,7 @@ def get_client(
     max_retries: int = 0,
     retry_on_timeout: bool = False,
 ) -> Elasticsearch:
-    """Return a reusable Elasticsearch client (singleton).
 
-    Avoids repeated instantiation per SDK best-practices.
-    Thread-safe via lock to prevent duplicate instantiation under
-    concurrent ``asyncio.to_thread`` workers.
-
-    The host defaults to the ``ELASTICSEARCH_URL`` environment variable,
-    falling back to ``http://localhost:9200``.
-    """
     global _client
     if _client is not None:
         return _client
@@ -1942,6 +1934,45 @@ def get_flow(flow_id: str, es: Elasticsearch | None = None) -> dict | None:
         return es.get(index=FLOWS_INDEX, id=flow_id)["_source"]
     except NotFoundError:
         return None
+
+
+def get_flow_by_id(flow_id: str, es: Elasticsearch | None = None) -> dict | None:
+    """Alias for get_flow — used by LLMReasoner tools."""
+    return get_flow(flow_id, es=es)
+
+
+def get_graph_summary(window_id: int, es: Elasticsearch | None = None) -> dict | None:
+    """Fetch the graph summary document for a specific window_id."""
+    es = es or get_client()
+    try:
+        resp = es.search(
+            index=GRAPH_SUMMARIES_INDEX,
+            body={
+                "size": 1,
+                "query": {"term": {"window_id": window_id}},
+            },
+        )
+        hits = resp["hits"]["hits"]
+        return hits[0]["_source"] if hits else None
+    except Exception:
+        return None
+
+
+def get_recent_graph_summaries(n: int = 5, es: Elasticsearch | None = None) -> list[dict]:
+    """Fetch the N most recent graph summaries, ordered by timestamp descending."""
+    es = es or get_client()
+    try:
+        resp = es.search(
+            index=GRAPH_SUMMARIES_INDEX,
+            body={
+                "size": n,
+                "sort": [{"timestamp": {"order": "desc"}}],
+                "query": {"match_all": {}},
+            },
+        )
+        return [hit["_source"] for hit in resp["hits"]["hits"]]
+    except Exception:
+        return []
 
 
 def get_counterfactual(cf_id: str, es: Elasticsearch | None = None) -> dict | None:

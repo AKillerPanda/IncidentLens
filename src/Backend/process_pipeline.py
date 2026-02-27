@@ -170,7 +170,7 @@ class RealTimeIncidentLens:
         # ---------------------------------
         # LLM Trigger
         # ---------------------------------
-        trigger = anomaly_score > 0.75
+        trigger = True
 
         if trigger:
             context = {
@@ -184,6 +184,16 @@ class RealTimeIncidentLens:
 
             print("\n=== LLM INVESTIGATION ===")
             print(json.dumps(insight, indent=2))
+
+        print(">>> TESTING SMTP DIRECTLY")
+
+        result = self.reasoner.send_email_alert(
+            window_id=window_id,
+            summary="Direct SMTP test from IncidentLens",
+            risk_level="high"
+        )
+
+        print("EMAIL RESULT:", result)
 
         return {
             "window_id": window_id,
