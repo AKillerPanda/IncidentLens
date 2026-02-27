@@ -335,7 +335,7 @@ async def pipeline(window_id, window_start, flows):
 
 def cmd_simulate(args):
     import asyncio
-    from src.Backend.ingest_pipeline import load_ndjson_files
+    from src.Backend.backfill import load_ndjson
     from src.Backend.simulation import StreamSimulator
 
     print(
@@ -345,9 +345,9 @@ def cmd_simulate(args):
         f"time_scale={args.time_scale}"
     )
 
-    # Load packets
-    df = load_ndjson_files(args.data_dir, max_rows=args.max_rows)
-    packets = df.to_dict(orient="records")
+    # Load packets — use backfill.load_ndjson (returns List[dict] directly)
+    ndjson_path = str(Path(args.data_dir) / "packets_0000.json")
+    packets = load_ndjson(ndjson_path, max_rows=args.max_rows)
 
     simulator = StreamSimulator(
         packets=packets,
@@ -380,27 +380,6 @@ def main():
     if args.command is None:
         parser.print_help()
         sys.exit(0)
-
-    cmd_fn = commands.get(args.command)
-    if cmd_fn:
-        cmd_fn(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
-
-
-
-    if args.command is None:
-        print("[INFO] No command provided — starting simulation mode")
-
-        # Set defaults for simulation
-        args.command = "simulate"
-        args.mode = "realtime"
-        args.time_scale = 0.2
-        args.rate = 200.0
-        args.window_size = 5.0
-        args.max_rows = None
-        args.data_dir = str(Path(__file__).resolve().parent.parent.parent / "data")
 
     cmd_fn = commands.get(args.command)
     if cmd_fn:
