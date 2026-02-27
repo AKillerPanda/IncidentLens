@@ -127,9 +127,12 @@ class RealTimeIncidentLens:
 
         df = pd.DataFrame(flows)
 
-        if "timestamp" not in df.columns:
-            df["timestamp"] = df.get("window_start", window_start)
+        # Always use window_start for graph windowing — simulation flows
+        # carry a wall-clock "timestamp" (ms) that would corrupt window
+        # assignment in build_sliding_window_graphs.
+        df["timestamp"] = window_start
 
+        # Map simulation flow fields → graph builder expected columns
         if "packet_length" not in df.columns:
             df["packet_length"] = df.get("total_bytes", 0)
 
@@ -144,6 +147,12 @@ class RealTimeIncidentLens:
 
         if "label" not in df.columns:
             df["label"] = 0
+
+        # NOTE: Since flows are pre-aggregated per window, all rows share
+        # the same timestamp → mean_iat and std_iat edge features will be
+        # zero.  This is an accepted limitation of the streaming path;
+        # the GNN's remaining 3 features (packet_count, total_bytes,
+        # mean_payload) still carry signal.
 
         graphs, id_to_ip = wrappers.build_graphs(
             df,

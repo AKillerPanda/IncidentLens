@@ -89,9 +89,18 @@ class RealTimeIncidentLens:
         # ---------------------------------
         df = pd.DataFrame(flows)
 
-        df["payload_length"] = 0
-        df["packet_length"] = df["total_bytes"]
+        # Map simulation flow fields → graph builder expected columns.
+        # Always use window_start for graph windowing — simulation flows
+        # carry a wall-clock "timestamp" (ms) that would corrupt window
+        # assignment.
         df["timestamp"] = df["window_start"]
+        df["packet_length"] = df["total_bytes"]
+
+        if "payload_length" not in df.columns:
+            df["payload_length"] = 0
+
+        # NOTE: Pre-aggregated flows → mean_iat / std_iat will be zero.
+        # Accepted limitation; the GNN's remaining features still carry signal.
 
         if self.debug:
             print("\n[DEBUG] Processed DataFrame:")
@@ -187,7 +196,9 @@ async def run_realtime_simulation(
     packets: List[dict],
     rate: float,
     window_size: float,
-    debug: bool,
+    debug: bool = False,
+    mode: str = "rate",
+    time_scale: float = 1.0,
 ):
 
     engine = RealTimeIncidentLens(
@@ -201,7 +212,8 @@ async def run_realtime_simulation(
         packets=packets,
         rate=rate,
         window_size=window_size,
-        mode="rate",
+        mode=mode,
+        time_scale=time_scale,
         window_callback=engine.process_window,
     )
 

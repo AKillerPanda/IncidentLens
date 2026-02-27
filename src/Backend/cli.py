@@ -324,19 +324,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-async def pipeline(window_id, window_start, flows):
-    from src.Backend.wrappers import index_flows_bulk
-
-    print(f"[PIPE] Processing window {window_id}")
-
-    if flows:
-        index_flows_bulk(flows)
 
 
 def cmd_simulate(args):
+    """Run real-time packet simulation with full pipeline.
+
+    Loads NDJSON packets, streams them through the StreamSimulator,
+    and for each window: builds graphs, generates embeddings, scores
+    with GNN, and indexes everything to Elasticsearch.
+    """
     import asyncio
+    from src.Backend.process_pipeline import run_realtime_simulation
     from src.Backend.backfill import load_ndjson
-    from src.Backend.simulation import StreamSimulator
 
     print(
         f"[Simulation] mode={args.mode} | "
@@ -345,20 +344,22 @@ def cmd_simulate(args):
         f"time_scale={args.time_scale}"
     )
 
-    # Load packets — use backfill.load_ndjson (returns List[dict] directly)
+    # Load packets — returns List[dict] directly
     ndjson_path = str(Path(args.data_dir) / "packets_0000.json")
     packets = load_ndjson(ndjson_path, max_rows=args.max_rows)
 
-    simulator = StreamSimulator(
-        packets=packets,
-        rate=args.rate,
-        window_size=args.window_size,
-        mode=args.mode,
-        time_scale=args.time_scale,
-        window_callback=pipeline,
-    )
+    print(f"Loaded {len(packets)} packets from {ndjson_path}")
 
-    asyncio.run(simulator.run())
+    asyncio.run(
+        run_realtime_simulation(
+            packets=packets,
+            rate=args.rate,
+            window_size=args.window_size,
+            debug=args.verbose if hasattr(args, 'verbose') else False,
+            mode=args.mode,
+            time_scale=args.time_scale,
+        )
+    )
 
 def main():
     parser = build_parser()
