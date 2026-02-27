@@ -1,21 +1,22 @@
-# src/Backend/realtime_pipeline.py
-
 from __future__ import annotations
 
+import argparse
 import asyncio
-from typing import List
+import json
+from pathlib import Path
+from typing import List, Dict, Any
 
 import pandas as pd
-import numpy as np
 import torch
 
-import src.Backend.wrappers as wrappers
+from src.Backend import wrappers
 from src.Backend.simulation import StreamSimulator
 from src.Backend.temporal_gnn import TemporalGNNEncoder, get_default_checkpoint
 
 
-# 1. REAL-TIME ENGINE (Inference + Indexing Only)
-
+# ============================================================
+# Real-Time Engine
+# ============================================================
 
 class RealTimeIncidentLens:
 
@@ -25,14 +26,14 @@ class RealTimeIncidentLens:
         stride: float = 5.0,
         embedding_dim: int = 16,
         delete_existing_indices: bool = False,
+        debug: bool = False,
     ):
         self.window_size = window_size
         self.stride = stride
         self.embedding_dim = embedding_dim
+        self.debug = debug
 
-        # ---------------------------
-        # Elasticsearch setup
-        # ---------------------------
+        # Elasticsearch
         self.es = wrappers.get_client()
         assert wrappers.ping(self.es), "Elasticsearch not reachable"
 
@@ -42,16 +43,13 @@ class RealTimeIncidentLens:
             delete_existing=delete_existing_indices,
         )
 
-        # ---------------------------
-        # Load GNN
-        # ---------------------------
         self._load_gnn()
 
     # --------------------------------------------------------
 
     def _load_gnn(self):
-
         path = get_default_checkpoint()
+
         if not path.exists():
             print("[RT] No trained GNN found — using fallback embeddings.")
             return
@@ -59,6 +57,7 @@ class RealTimeIncidentLens:
         encoder = TemporalGNNEncoder.from_checkpoint(path)
         wrappers.set_gnn_encoder(encoder)
 
+        self.embedding_dim = encoder.embedding_dim
         print(f"[RT] Loaded Temporal GNN ({encoder.embedding_dim} dim)")
 
     # --------------------------------------------------------
@@ -68,106 +67,134 @@ class RealTimeIncidentLens:
         window_id: int,
         window_start: float,
         flows: List[dict],
-    ):
+    ) -> Dict[str, Any] | None:
 
         if not flows:
-            return
+            return None
 
-        print(f"\n[RT] Window {window_id} ({len(flows)} flows)")
+        print(f"\n========== WINDOW {window_id} ==========")
+        print(f"Flows in window: {len(flows)}")
 
-        # ----------------------------------------------------
-        # Convert flows → DataFrame
-        # ----------------------------------------------------
+        if self.debug:
+            print("\n[DEBUG] Raw flows:")
+            for f in flows[:3]:
+                print(f)
 
+        # ---------------------------------
+        # Convert to DataFrame
+        # ---------------------------------
         df = pd.DataFrame(flows)
 
-        # Required fields for graph builder
         df["payload_length"] = 0
         df["packet_length"] = df["total_bytes"]
         df["timestamp"] = df["window_start"]
 
-        # ----------------------------------------------------
-        # Build graph snapshot
-        # ----------------------------------------------------
+        if self.debug:
+            print("\n[DEBUG] Processed DataFrame:")
+            print(df.head())
+            print("[DEBUG] Columns:", list(df.columns))
 
-        graphs, id_to_ip = wrappers.build_sliding_window_graphs(
+        # ---------------------------------
+        # Build + Index Graphs
+        # ---------------------------------
+        graphs, id_to_ip, n_indexed = wrappers.build_and_index_graphs(
             df,
             window_size=self.window_size,
             stride=self.stride,
+            es=self.es,
         )
 
         if not graphs:
-            return
+            print("[RT] No graph generated.")
+            return None
 
         graph = graphs[0]
 
-        # ----------------------------------------------------
-        # Generate embeddings (GNN auto-used)
-        # ----------------------------------------------------
+        print(f"[RT] Graph Nodes: {graph.num_nodes}")
+        print(f"[RT] Graph Edges: {graph.num_edges}")
 
+        # ---------------------------------
+        # Generate Embeddings
+        # ---------------------------------
         flow_ids, embeddings, labels = wrappers.generate_embeddings(
             graphs,
             id_to_ip,
             embedding_dim=self.embedding_dim,
         )
 
-        # ----------------------------------------------------
-        # Index flows
-        # ----------------------------------------------------
-
-        wrappers.index_graphs_bulk(
-            graphs,
-            id_to_ip,
-            es=self.es,
-        )
-
-        # ----------------------------------------------------
-        # Index embeddings
-        # ----------------------------------------------------
-
-        wrappers.index_embeddings(
+        n_emb = wrappers.index_embeddings(
             flow_ids,
             embeddings,
             labels,
             es=self.es,
         )
 
-        # ----------------------------------------------------
-        # Print anomaly score
-        # ----------------------------------------------------
+        print(f"[RT] Indexed {n_indexed} flows")
+        print(f"[RT] Indexed {n_emb} embeddings")
 
-        if wrappers.get_gnn_encoder() is not None:
+        if self.debug and len(embeddings) > 0:
+            print("\n[DEBUG] Embedding shape:", embeddings.shape)
+            print("[DEBUG] First embedding vector:\n", embeddings[0])
 
+        # ---------------------------------
+        # GNN Anomaly Score
+        # ---------------------------------
+        anomaly_score = 0.0
+        gnn = wrappers.get_gnn_encoder()
+
+        if gnn is not None:
             with torch.no_grad():
-                output = wrappers.get_gnn_encoder()(graph)
+                output = gnn(graph)
 
                 if isinstance(output, dict):
-                    score = output.get("prediction_score", 0.0)
+                    anomaly_score = output.get("prediction_score", 0.0)
                 elif isinstance(output, (tuple, list)):
-                    score = output[-1]
+                    anomaly_score = output[-1]
                 else:
-                    score = output
+                    anomaly_score = output
 
-                if isinstance(score, torch.Tensor):
-                    score = score.item()
+                if isinstance(anomaly_score, torch.Tensor):
+                    anomaly_score = anomaly_score.item()
 
-                print(f"[RT] GNN anomaly score: {float(score):.4f}")
+        anomaly_score = float(anomaly_score)
+
+        print(f"[RT] GNN Anomaly Score: {anomaly_score:.4f}")
+
+        # ---------------------------------
+        # Severity Breakdown (ES Aggregation)
+        # ---------------------------------
+        try:
+            breakdown = wrappers.aggregate_severity_breakdown(es=self.es)
+            print("[RT] Severity Distribution:", breakdown.get("severity"))
+            print("[RT] Volume Distribution:", breakdown.get("volume"))
+        except Exception:
+            print("[RT] Severity aggregation unavailable.")
+
+        return {
+            "window_id": window_id,
+            "num_flows": len(flows),
+            "num_indexed": n_indexed,
+            "num_embeddings": n_emb,
+            "anomaly_score": anomaly_score,
+        }
 
 
 # ============================================================
-# 2. RUN REAL-TIME SIMULATION
+# Simulation Runner
 # ============================================================
 
 async def run_realtime_simulation(
     packets: List[dict],
-    rate: float = 500.0,
-    window_size: float = 5.0,
+    rate: float,
+    window_size: float,
+    debug: bool,
 ):
 
     engine = RealTimeIncidentLens(
         window_size=window_size,
         stride=window_size,
         embedding_dim=16,
+        debug=debug,
     )
 
     simulator = StreamSimulator(
@@ -182,18 +209,24 @@ async def run_realtime_simulation(
 
 
 # ============================================================
-# CLI ENTRY
+# CLI
 # ============================================================
 
 def main():
 
-    import json
-    from pathlib import Path
+    parser = argparse.ArgumentParser("Real-Time IncidentLens")
 
-    data_path = Path("data/packets_sample.json")
+    parser.add_argument("--ndjson", required=True, help="Path to NDJSON packet file")
+    parser.add_argument("--rate", type=float, default=500.0)
+    parser.add_argument("--window-size", type=float, default=5.0)
+    parser.add_argument("--debug", action="store_true")
+
+    args = parser.parse_args()
+
+    data_path = Path(args.ndjson)
 
     if not data_path.exists():
-        print("Provide a packet JSON file for simulation.")
+        print(f"File not found: {data_path}")
         return
 
     packets = []
@@ -201,7 +234,16 @@ def main():
         for line in f:
             packets.append(json.loads(line))
 
-    asyncio.run(run_realtime_simulation(packets))
+    print(f"Loaded {len(packets)} packets.")
+
+    asyncio.run(
+        run_realtime_simulation(
+            packets=packets,
+            rate=args.rate,
+            window_size=args.window_size,
+            debug=args.debug,
+        )
+    )
 
 
 if __name__ == "__main__":
