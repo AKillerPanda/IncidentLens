@@ -68,6 +68,14 @@ src/Backend/backup/
 Thumbs.db
 
 # =========================
+# Model checkpoints (mount via volume)
+# =========================
+models/
+*.pt
+*.pth
+*.onnx
+
+# =========================
 # Misc
 # =========================
 .pytest_cache/

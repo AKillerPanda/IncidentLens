@@ -1,9 +1,8 @@
-version: "3.8"
-
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
     container_name: elasticsearch
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -17,10 +16,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - incidentlens
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.12.0
     container_name: kibana
+    restart: unless-stopped
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
@@ -28,33 +30,51 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+    networks:
+      - incidentlens
 
   backend:
     build:
       context: ..
       dockerfile: Dockerfile.backend
     container_name: incidentlens-backend
+    restart: unless-stopped
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - INCIDENTLENS_CORS_ORIGINS=http://localhost,http://localhost:80,http://frontend
       - PORT=8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - models:/app/models
     depends_on:
       elasticsearch:
         condition: service_healthy
+    networks:
+      - incidentlens
 
   frontend:
     build:
       context: ..
       dockerfile: Dockerfile.frontend
     container_name: incidentlens-frontend
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - incidentlens
 
 volumes:
   esdata:
+  models:
+
+networks:
+  incidentlens:
+    driver: bridge

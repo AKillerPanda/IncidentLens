@@ -22,10 +22,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Create models directory for checkpoints (volume-mountable)
+RUN mkdir -p /app/models
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the FastAPI server via the CLI entry point
-CMD ["python", "-m", "src.Backend.server"]
+# Run the FastAPI server via the unified CLI entry point
+CMD ["python", "-m", "src.Backend.cli", "serve", "--port", "8000"]
