@@ -284,9 +284,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--batch-size", type=int, default=8, help="Sequences per gradient update")
     p_train.add_argument("--ode", action="store_true", help="Use Neural ODE weight evolution (requires torchdiffeq)")
     p_train.add_argument("--checkpoint", default=None, help="Where to save model (default: models/temporal_gnn.pt)")
+        # --- simulate ---
+    p_sim = sub.add_parser("simulate", help="Run real-time packet simulation")
+    p_sim.add_argument(
+        "--data-dir",
+        default=str(Path(__file__).resolve().parent.parent.parent / "data"),
+        help="NDJSON data directory"
+    )
+    p_sim.add_argument(
+        "--max-rows",
+        type=int,
+        default=None,
+        help="Limit number of packets"
+    )
+    p_sim.add_argument(
+        "--rate",
+        type=float,
+        default=200.0,
+        help="Packets per second"
+    )
+    p_sim.add_argument(
+        "--window-size",
+        type=float,
+        default=5.0,
+        help="Window duration in seconds"
+    )
 
     return parser
 
+def cmd_simulate(args):
+    """Simulate real-time packet streaming and windowed aggregation."""
+    import asyncio
+    from simulation import StreamSimulator
+    from src.Backend.ingest_pipeline import load_ndjson_files
+
+    print(f"[Simulation] rate={args.rate} packets/sec | window={args.window_size}s")
+
+    # Load packets from NDJSON
+    df = load_ndjson_files(args.data_dir, max_rows=args.max_rows)
+
+    # Convert dataframe to packet dict stream
+    packets = df.to_dict(orient="records")
+
+    simulator = StreamSimulator(
+        packets=packets,
+        rate=args.rate,
+        window_size=args.window_size,
+    )
+
+    asyncio.run(simulator.run())
 
 def main():
     parser = build_parser()
@@ -296,13 +342,14 @@ def main():
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
 
     commands = {
-        "health": cmd_health,
-        "ingest": cmd_ingest,
-        "investigate": cmd_investigate,
-        "serve": cmd_serve,
-        "convert": cmd_convert,
-        "train": cmd_train,
-    }
+    "health": cmd_health,
+    "ingest": cmd_ingest,
+    "investigate": cmd_investigate,
+    "serve": cmd_serve,
+    "convert": cmd_convert,
+    "train": cmd_train,
+    "simulate": cmd_simulate,   # ← add this
+}
 
     if args.command is None:
         parser.print_help()
