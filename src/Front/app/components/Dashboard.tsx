@@ -202,7 +202,7 @@ export function Dashboard() {
               ) : sevError ? (
                 <p className="text-xs text-red-400">Failed to load severity data</p>
               ) : (
-                <p className="text-xs text-slate-500">No data available</p>
+                <p className="text-xs text-slate-500">{!health ? 'Start backend to see live data' : 'No data available'}</p>
               )}
             </CardContent>
           </Card>
@@ -235,7 +235,7 @@ export function Dashboard() {
               ) : (
                 <div>
                   <div className="text-2xl text-slate-100">0</div>
-                  <p className="text-xs text-slate-500">No anomalies above threshold</p>
+                  <p className="text-xs text-slate-500">{!health ? 'Start backend to see ML data' : 'No anomalies above threshold'}</p>
                 </div>
               )}
             </CardContent>
@@ -268,7 +268,7 @@ export function Dashboard() {
               ) : mlInflError ? (
                 <p className="text-xs text-red-400">Failed to load influencer data</p>
               ) : (
-                <p className="text-xs text-slate-500">No influencer data available</p>
+                <p className="text-xs text-slate-500">{!health ? 'Start backend to see influencer data' : 'No influencer data available'}</p>
               )}
             </CardContent>
           </Card>

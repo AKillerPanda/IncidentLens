@@ -279,7 +279,12 @@ export function useInvestigationStream() {
  */
 export function useSeverityBreakdown(): UseAsyncResult<SeverityBreakdownResponse | null> {
   return useAsync(async () => {
-    return await api.getSeverityBreakdown();
+    try {
+      return await api.getSeverityBreakdown();
+    } catch {
+      // Backend offline — return null so UI shows "No data" instead of error
+      return null;
+    }
   }, []);
 }
 
@@ -292,10 +297,14 @@ export function useMLAnomalies(
   minScore = 75,
 ): UseAsyncResult<MLAnomaliesResponse | null> {
   return useAsync(async () => {
-    return await api.getMLAnomalies({
-      job_id: jobId,
-      min_score: minScore,
-    });
+    try {
+      return await api.getMLAnomalies({
+        job_id: jobId,
+        min_score: minScore,
+      });
+    } catch {
+      return null;
+    }
   }, [jobId, minScore]);
 }
 
@@ -307,10 +316,14 @@ export function useMLInfluencers(
   minScore = 50,
 ): UseAsyncResult<MLInfluencersResponse | null> {
   return useAsync(async () => {
-    return await api.getMLInfluencers({
-      job_id: jobId,
-      min_score: minScore,
-    });
+    try {
+      return await api.getMLInfluencers({
+        job_id: jobId,
+        min_score: minScore,
+      });
+    } catch {
+      return null;
+    }
   }, [jobId, minScore]);
 }
 
