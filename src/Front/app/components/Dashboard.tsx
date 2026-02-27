@@ -15,7 +15,8 @@ import {
   Clock,
   Database,
   Network,
-  RefreshCw
+  RefreshCw,
+  Zap
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -71,6 +72,16 @@ export function Dashboard() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              <Link to="/simulation">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-emerald-700 text-emerald-400 hover:bg-emerald-900/30"
+                >
+                  <Zap className="w-4 h-4 mr-2" />
+                  Simulation
+                </Button>
+              </Link>
               <div className="flex items-center gap-2">
                 <Clock className="w-4 h-4 text-slate-400" />
                 <span className="text-sm text-slate-400">

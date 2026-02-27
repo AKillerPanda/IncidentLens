@@ -165,6 +165,14 @@ class PaginatedSearchRequest(BaseModel):
     pit_id: str | None = None
 
 
+class SimulateRequest(BaseModel):
+    """Configuration for a packet-replay simulation."""
+    rate: float = 500.0
+    window_size: float = 5.0
+    max_rows: int | None = None
+    data_file: str = "data/packets_0000.json"
+
+
 # ──────────────────────────────────────────────
 # REST endpoints — direct wrappers calls (no dispatch overhead)
 # ──────────────────────────────────────────────
@@ -741,6 +749,178 @@ async def ws_investigate(websocket: WebSocket):
         logger.info("WebSocket disconnected")
     except Exception as e:
         logger.error("WebSocket error: %s", e)
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ──────────────────────────────────────────────
+# WebSocket endpoint — real-time simulation
+# ──────────────────────────────────────────────
+
+@app.websocket("/ws/simulate")
+async def ws_simulate(websocket: WebSocket):
+    """Stream simulation window results to the frontend in real time.
+
+    Protocol:
+        1. Client connects.
+        2. Client sends JSON config: {"rate": 500, "window_size": 5.0,
+           "max_rows": 200, "data_file": "data/packets_0000.json"}
+           (all fields optional — defaults apply).
+        3. Server streams events as JSON:
+            {"type": "status", ...}     — lifecycle messages
+            {"type": "window", ...}     — per-window results
+            {"type": "error", ...}      — errors
+            {"type": "done"}            — simulation complete
+        4. Server sends {"type": "done"} and closes.
+    """
+    await websocket.accept()
+    logger.info("Simulation WebSocket connected")
+
+    try:
+        # --- Receive config ---
+        raw = await websocket.receive_text()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {}
+
+        rate = float(payload.get("rate", 500.0))
+        window_size = float(payload.get("window_size", 5.0))
+        max_rows = payload.get("max_rows")
+        data_file = str(payload.get("data_file", "data/packets_0000.json"))
+
+        # Security: only allow files under data/
+        import pathlib
+        base_data = pathlib.Path("data").resolve()
+        requested = pathlib.Path(data_file).resolve()
+        if not str(requested).startswith(str(base_data)):
+            await websocket.send_json({
+                "type": "error",
+                "content": "data_file must be under the data/ directory",
+            })
+            await websocket.send_json({"type": "done"})
+            return
+
+        await websocket.send_json({
+            "type": "status",
+            "content": f"Loading packets from {data_file}…",
+        })
+
+        # --- Load packets ---
+        from src.Backend.backfill import load_ndjson
+        try:
+            packets = await asyncio.to_thread(
+                load_ndjson, data_file, max_rows
+            )
+        except FileNotFoundError:
+            await websocket.send_json({
+                "type": "error",
+                "content": f"Data file not found: {data_file}",
+            })
+            await websocket.send_json({"type": "done"})
+            return
+
+        await websocket.send_json({
+            "type": "status",
+            "content": f"Loaded {len(packets)} packets. Starting simulation at {rate} pps, window={window_size}s…",
+            "total_packets": len(packets),
+        })
+
+        # --- Build the engine + simulator ---
+        from src.Backend.process_pipeline import RealTimeIncidentLens
+        from src.Backend.simulation import StreamSimulator
+
+        loop = asyncio.get_running_loop()
+        ws_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        # Track processed packets for progress
+        _window_count = {"n": 0}
+
+        # Original engine callback produces a result dict per window.
+        # We wrap it to also push the result onto our WS queue.
+        engine = RealTimeIncidentLens(
+            window_size=window_size,
+            stride=window_size,
+            embedding_dim=16,
+            debug=False,
+        )
+
+        original_process = engine.process_window
+
+        async def _ws_callback(window_id: int, window_start: float, flows: list):
+            result = await original_process(window_id, window_start, flows)
+            _window_count["n"] += 1
+            event = {
+                "type": "window",
+                "window_id": window_id,
+                "window_start": window_start,
+                "num_flows": len(flows),
+                "num_indexed": result.get("num_indexed", 0) if result else 0,
+                "num_embeddings": result.get("num_embeddings", 0) if result else 0,
+                "anomaly_score": result.get("anomaly_score", 0.0) if result else 0.0,
+                "window_number": _window_count["n"],
+            }
+            await ws_queue.put(event)
+            return result
+
+        engine.process_window = _ws_callback
+
+        simulator = StreamSimulator(
+            packets=packets,
+            rate=rate,
+            window_size=window_size,
+            mode="rate",
+            time_scale=1.0,
+            window_callback=engine.process_window,
+        )
+
+        # --- Run simulation in background, stream results ---
+        sim_done = asyncio.Event()
+
+        async def _run_sim():
+            try:
+                await simulator.run()
+            except Exception as exc:
+                await ws_queue.put({
+                    "type": "error",
+                    "content": f"Simulation error: {exc}",
+                })
+            finally:
+                sim_done.set()
+                await ws_queue.put(None)  # sentinel
+
+        sim_task = asyncio.create_task(_run_sim())
+
+        # Drain the queue and forward events to the client
+        while True:
+            event = await ws_queue.get()
+            if event is None:
+                break
+            try:
+                await websocket.send_json(event)
+            except WebSocketDisconnect:
+                sim_task.cancel()
+                break
+
+        # Wait for simulation task cleanup
+        try:
+            await sim_task
+        except asyncio.CancelledError:
+            pass
+
+        await websocket.send_json({"type": "done"})
+
+    except WebSocketDisconnect:
+        logger.info("Simulation WebSocket disconnected")
+    except Exception as e:
+        logger.error("Simulation WebSocket error: %s", e)
         try:
             await websocket.send_json({"type": "error", "content": str(e)})
         except Exception:

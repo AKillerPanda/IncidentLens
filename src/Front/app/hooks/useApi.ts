@@ -20,6 +20,9 @@ import type {
   MLAnomaliesResponse,
   MLInfluencersResponse,
   CounterfactualSearchResponse,
+  SimulationConfig,
+  SimulationEvent,
+  SimulationWindowEvent,
 } from "../types";
 import * as api from "../services/api";
 import {
@@ -338,4 +341,78 @@ export function useCounterfactualSearch(
       return null;
     }
   }, [query]);
+}
+
+/* ──────────────────────────────────────────────
+ * Real-time simulation stream
+ * ────────────────────────────────────────────── */
+
+export function useSimulation() {
+  const [windows, setWindows] = useState<SimulationWindowEvent[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const start = useCallback(async (config: Partial<SimulationConfig>) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setWindows([]);
+    setStatus(null);
+    setRunning(true);
+    setError(null);
+    setDone(false);
+
+    try {
+      for await (const event of api.simulateStream(config, controller.signal)) {
+        if (controller.signal.aborted) break;
+        switch (event.type) {
+          case "status":
+            setStatus(event.content);
+            break;
+          case "window":
+            setWindows((prev) => [...prev, event]);
+            break;
+          case "error":
+            setError(event.content);
+            break;
+        }
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setError(String(e));
+      }
+    } finally {
+      if (abortRef.current === controller) {
+        setDone(true);
+        setRunning(false);
+      }
+    }
+  }, []);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    setRunning(false);
+    setDone(true);
+  }, []);
+
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    setWindows([]);
+    setStatus(null);
+    setError(null);
+    setRunning(false);
+    setDone(false);
+  }, []);
+
+  return { windows, status, running, error, done, start, stop, reset };
 }

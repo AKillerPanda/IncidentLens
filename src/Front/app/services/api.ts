@@ -25,6 +25,8 @@ import type {
   Incident,
   NetworkGraphData,
   ElasticsearchData,
+  SimulationConfig,
+  SimulationEvent,
 } from "../types";
 
 const BASE = "";  // same-origin — Vite proxy handles /api → backend
@@ -325,5 +327,95 @@ export async function* investigateStream(
     yield queue.shift()!;
   }
   // Surface any error that arrived after the stream closed
+  if (error) throw error;
+}
+
+/* ─── simulation WebSocket (streaming) ─── */
+
+/**
+ * Opens a WebSocket to `/ws/simulate` and yields events as they arrive.
+ *
+ * Usage:
+ * ```ts
+ * for await (const event of simulateStream({ rate: 500, window_size: 5 })) {
+ *   console.log(event);
+ * }
+ * ```
+ */
+export async function* simulateStream(
+  config: Partial<SimulationConfig>,
+  signal?: AbortSignal,
+): AsyncGenerator<SimulationEvent> {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${window.location.host}/ws/simulate`);
+
+  signal?.addEventListener("abort", () => ws.close(), { once: true });
+
+  const queue: SimulationEvent[] = [];
+  let resolve: (() => void) | null = null;
+  let done = false;
+  let error: Error | null = null;
+
+  ws.onmessage = (ev) => {
+    let event: SimulationEvent;
+    try {
+      event = JSON.parse(ev.data);
+    } catch {
+      error = new Error("Malformed JSON from server");
+      resolve?.();
+      return;
+    }
+    if (event.type === "done") {
+      done = true;
+      ws.close();
+      resolve?.();
+      return;
+    }
+    queue.push(event);
+    resolve?.();
+  };
+
+  ws.onerror = () => {
+    error = new Error("WebSocket error");
+    resolve?.();
+  };
+
+  ws.onclose = () => {
+    done = true;
+    resolve?.();
+  };
+
+  // Wait for open, then send config
+  await new Promise<void>((res, rej) => {
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        rate: config.rate ?? 500,
+        window_size: config.window_size ?? 5.0,
+        max_rows: config.max_rows ?? null,
+        data_file: config.data_file ?? "data/packets_0000.json",
+      }));
+      ws.onerror = () => {
+        error = new Error("WebSocket error");
+        resolve?.();
+      };
+      res();
+    };
+    ws.onerror = () => rej(new Error("WebSocket failed to connect"));
+  });
+
+  while (!done) {
+    if (queue.length > 0) {
+      yield queue.shift()!;
+      continue;
+    }
+    if (error) throw error;
+    await new Promise<void>((r) => {
+      resolve = r;
+    });
+  }
+
+  while (queue.length > 0) {
+    yield queue.shift()!;
+  }
   if (error) throw error;
 }

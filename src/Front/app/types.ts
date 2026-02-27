@@ -240,3 +240,48 @@ export interface AggregationResponse {
   buckets: AggregationBucket[];
   total_buckets: number;
 }
+
+/* ──────────────────────────────────────────────
+ * Simulation WebSocket event types
+ * ────────────────────────────────────────────── */
+
+export interface SimulationConfig {
+  rate: number;
+  window_size: number;
+  max_rows?: number | null;
+  data_file: string;
+}
+
+export type SimulationEventType = "status" | "window" | "error" | "done";
+
+export interface SimulationStatusEvent {
+  type: "status";
+  content: string;
+  total_packets?: number;
+}
+
+export interface SimulationWindowEvent {
+  type: "window";
+  window_id: number;
+  window_start: number;
+  num_flows: number;
+  num_indexed: number;
+  num_embeddings: number;
+  anomaly_score: number;
+  window_number: number;
+}
+
+export interface SimulationErrorEvent {
+  type: "error";
+  content: string;
+}
+
+export interface SimulationDoneEvent {
+  type: "done";
+}
+
+export type SimulationEvent =
+  | SimulationStatusEvent
+  | SimulationWindowEvent
+  | SimulationErrorEvent
+  | SimulationDoneEvent;
