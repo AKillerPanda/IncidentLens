@@ -146,7 +146,6 @@ def cmd_train(args):
     import pandas as pd
     from src.Backend.temporal_gnn import (
         prepare_temporal_dataset,
-        prepare_temporal_dataset_from_csv,
         train_temporal_gnn,
         get_default_checkpoint,
     )
@@ -181,7 +180,6 @@ def cmd_train(args):
         df = load_ndjson_files(args.data_dir, max_rows=args.max_rows)
 
         print("Building graphs ...")
-        from src.Backend.graph_data_wrapper import build_sliding_window_graphs
         graphs, id_to_ip = build_graphs_from_df(df, args.window_size, args.stride)
 
         # Pipeline: sanitize -> recompute -> normalize -> preprocess -> sequences
@@ -200,7 +198,10 @@ def cmd_train(args):
             "norm_stats": norm_stats,
         }
     else:
-        print("Provide either --packets + --labels (CSV mode) or --data-dir (NDJSON mode)")
+        if args.packets or args.labels:
+            print("CSV mode requires BOTH --packets and --labels")
+        else:
+            print("Provide either --packets + --labels (CSV mode) or --data-dir (NDJSON mode)")
         sys.exit(1)
 
     if not sequences:
@@ -284,7 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--batch-size", type=int, default=8, help="Sequences per gradient update")
     p_train.add_argument("--ode", action="store_true", help="Use Neural ODE weight evolution (requires torchdiffeq)")
     p_train.add_argument("--checkpoint", default=None, help="Where to save model (default: models/temporal_gnn.pt)")
-        # --- simulate ---
+
+    # --- simulate ---
     p_sim = sub.add_parser("simulate", help="Run real-time packet simulation")
     p_sim.add_argument(
         "--data-dir",
@@ -310,11 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Window duration in seconds"
     )
     p_sim.add_argument(
-    "--mode",
-    choices=["rate", "realtime"],
-    default="rate",
-    help="Replay mode"
-)
+        "--mode",
+        choices=["rate", "realtime"],
+        default="rate",
+        help="Replay mode",
+    )
 
     p_sim.add_argument(
         "--time-scale",
@@ -345,8 +347,12 @@ def cmd_simulate(args):
     )
 
     # Load packets — returns List[dict] directly
-    ndjson_path = str(Path(args.data_dir) / "packets_0000.json")
-    packets = load_ndjson(ndjson_path, max_rows=args.max_rows)
+    ndjson_path = Path(args.data_dir) / "packets_0000.json"
+    if not ndjson_path.exists():
+        print(f"[ERROR] Packet file not found: {ndjson_path}")
+        print(f"        Run 'incidentlens convert' first to generate NDJSON data.")
+        sys.exit(1)
+    packets = load_ndjson(str(ndjson_path), max_rows=args.max_rows)
 
     print(f"Loaded {len(packets)} packets from {ndjson_path}")
 
@@ -355,7 +361,7 @@ def cmd_simulate(args):
             packets=packets,
             rate=args.rate,
             window_size=args.window_size,
-            debug=args.verbose if hasattr(args, 'verbose') else False,
+            debug=args.verbose,
             mode=args.mode,
             time_scale=args.time_scale,
         )
