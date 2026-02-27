@@ -27,9 +27,9 @@ export function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const { data: incidents, loading, error, refetch } = useIncidents();
   const { data: health } = useBackendHealth();
-  const { data: severityBreakdown } = useSeverityBreakdown();
-  const { data: mlAnomalies } = useMLAnomalies();
-  const { data: mlInfluencers } = useMLInfluencers();
+  const { data: severityBreakdown, error: sevError } = useSeverityBreakdown();
+  const { data: mlAnomalies, error: mlAnomalyError } = useMLAnomalies();
+  const { data: mlInfluencers, error: mlInflError } = useMLInfluencers();
 
   const allIncidents = incidents ?? [];
 
@@ -199,6 +199,8 @@ export function Dashboard() {
                   })}
                   <p className="text-xs text-slate-500 mt-1">{severityBreakdown.total_flows} total flows</p>
                 </div>
+              ) : sevError ? (
+                <p className="text-xs text-red-400">Failed to load severity data</p>
               ) : (
                 <p className="text-xs text-slate-500">No data available</p>
               )}
@@ -224,6 +226,11 @@ export function Dashboard() {
                       </Badge>
                     </div>
                   ))}
+                </div>
+              ) : mlAnomalyError ? (
+                <div>
+                  <div className="text-2xl text-slate-100">—</div>
+                  <p className="text-xs text-red-400">Failed to load ML anomalies</p>
                 </div>
               ) : (
                 <div>
@@ -258,6 +265,8 @@ export function Dashboard() {
                   ))}
                   <p className="text-xs text-slate-500 mt-1">{mlInfluencers.count} influencers found</p>
                 </div>
+              ) : mlInflError ? (
+                <p className="text-xs text-red-400">Failed to load influencer data</p>
               ) : (
                 <p className="text-xs text-slate-500">No influencer data available</p>
               )}

@@ -901,3 +901,15 @@ def dispatch(tool_name: str, arguments: dict[str, Any]) -> str:
 def list_tools() -> list[str]:
     """Return names of all registered tools."""
     return list(_REGISTRY.keys())
+
+
+def get_tool(name: str):
+    """Return a registered tool function by name.
+
+    Public accessor so callers don't reach into the private ``_REGISTRY``
+    dict directly.  Raises ``KeyError`` if the tool is not registered.
+    """
+    fn = _REGISTRY.get(name)
+    if fn is None:
+        raise KeyError(f"Tool '{name}' is not registered")
+    return fn

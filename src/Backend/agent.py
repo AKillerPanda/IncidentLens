@@ -36,9 +36,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentConfig:
     """Runtime configuration for the agent."""
-    model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    api_key: str = os.getenv("OPENAI_API_KEY", "")
-    base_url: str | None = os.getenv("OPENAI_BASE_URL", None)
+    # Use field(default_factory=...) so env vars are read at instantiation
+    # time, not at module-load time.  This matters for test overrides and
+    # for processes that set env vars after importing.
+    model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    base_url: str | None = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", None))
     max_steps: int = 15          # safety cap on reasoning loop
     temperature: float = 0.1     # low temp for deterministic tool use
     max_tokens: int = 1024       # keep responses concise & fast
@@ -133,6 +136,11 @@ class IncidentAgent:
             base_url=self.config.base_url,
         )
         self._tools = agent_tools.TOOL_SCHEMAS
+        # Shared executor — avoids creating (and leaking) a new
+        # ThreadPoolExecutor on every tool call.
+        self._tool_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="agent-tool",
+        )
 
     def investigate(self, user_query: str) -> Iterator[dict]:
         """Run a full multi-step investigation, yielding events.
@@ -195,16 +203,12 @@ class IncidentAgent:
                 yield tool_call_event(fn_name, fn_args)
 
                 # Run tool with timeout to avoid blocking on slow ES / network
-                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = self._tool_executor.submit(agent_tools.dispatch, fn_name, fn_args)
                 try:
-                    future = pool.submit(agent_tools.dispatch, fn_name, fn_args)
-                    try:
-                        result_str = future.result(timeout=self.config.tool_timeout)
-                    except concurrent.futures.TimeoutError:
-                        result_str = json.dumps({"error": f"Tool '{fn_name}' timed out after {self.config.tool_timeout}s"})
-                finally:
-                    # wait=False so a stuck tool doesn't block the investigation
-                    pool.shutdown(wait=False, cancel_futures=True)
+                    result_str = future.result(timeout=self.config.tool_timeout)
+                except concurrent.futures.TimeoutError:
+                    result_str = json.dumps({"error": f"Tool '{fn_name}' timed out after {self.config.tool_timeout}s"})
+                    future.cancel()
 
                 yield tool_result_event(fn_name, result_str)
 

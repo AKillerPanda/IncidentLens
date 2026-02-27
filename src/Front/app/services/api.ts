@@ -34,7 +34,16 @@ const BASE = "";  // same-origin — Vite proxy handles /api → backend
 /* ─── helpers ─────────────────────────────── */
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  // 30-second timeout prevents requests from hanging indefinitely
+  // when the backend is unreachable or slow.
+  const timeout = AbortSignal.timeout(30_000);
+  const merged: RequestInit = {
+    ...init,
+    signal: init?.signal
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout,
+  };
+  const res = await fetch(`${BASE}${url}`, merged);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`API ${res.status}: ${text || res.statusText}`);
@@ -272,6 +281,7 @@ export async function* investigateStream(
       event = JSON.parse(ev.data);
     } catch {
       error = new Error("Malformed JSON from server");
+      ws.close();
       resolve?.();
       return;
     }
@@ -362,6 +372,7 @@ export async function* simulateStream(
       event = JSON.parse(ev.data);
     } catch {
       error = new Error("Malformed JSON from server");
+      ws.close();
       resolve?.();
       return;
     }

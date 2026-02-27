@@ -76,8 +76,15 @@ class network:
 	def set_node_features(self) -> None:
 		if not self.nodes:
 			return
-		ordered = [self.nodes[i].features for i in sorted(self.nodes.keys())]
-		self.x = torch.stack(ordered, dim=0).to(self.device)
+		# Determine feature dimension from an arbitrary node
+		sample = next(iter(self.nodes.values())).features
+		feat_dim = sample.shape[0] if sample.dim() > 0 else 1
+		# Allocate (num_nodes, feat_dim) with zeros so non-contiguous IDs
+		# (e.g. {0, 5, 10}) still produce a correctly-indexed tensor.
+		x = torch.zeros(self.num_nodes, feat_dim, device=self.device)
+		for nid, n in self.nodes.items():
+			x[nid] = n.features
+		self.x = x
 
 	def build_edge_index(self) -> torch.Tensor:
 		if self._edge_index_cache is not None:
@@ -393,6 +400,8 @@ def build_window_data(
 	feat_arr = flows_df[feature_cols].to_numpy(dtype=np.float32)
 	label_arr = flows_df["edge_label"].to_numpy(dtype=np.float32)
 	wid_arr = flows_df["window_id"].values
+	# Use actual timestamps for window_start (falls back to window_id)
+	ws_arr = flows_df["window_start"].values if "window_start" in flows_df.columns else None
 
 	# Vectorised split: sort by window_id + searchsorted boundaries
 	order = np.argsort(wid_arr, kind="mergesort")
@@ -415,7 +424,8 @@ def build_window_data(
 			num_nodes=n_nodes,
 		)
 		data.window_id = int(wid)
-		data.window_start = float(wid)  # temporal ordering key
+		# Use actual timestamp rather than integer window_id
+		data.window_start = float(ws_arr[idx[0]]) if ws_arr is not None else float(wid)
 		data_list.append(data)
 
 	return data_list

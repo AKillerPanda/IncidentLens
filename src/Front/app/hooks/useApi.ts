@@ -279,11 +279,7 @@ export function useInvestigationStream() {
  */
 export function useSeverityBreakdown(): UseAsyncResult<SeverityBreakdownResponse | null> {
   return useAsync(async () => {
-    try {
-      return await api.getSeverityBreakdown();
-    } catch {
-      return null;
-    }
+    return await api.getSeverityBreakdown();
   }, []);
 }
 
@@ -296,14 +292,10 @@ export function useMLAnomalies(
   minScore = 75,
 ): UseAsyncResult<MLAnomaliesResponse | null> {
   return useAsync(async () => {
-    try {
-      return await api.getMLAnomalies({
-        job_id: jobId,
-        min_score: minScore,
-      });
-    } catch {
-      return null;
-    }
+    return await api.getMLAnomalies({
+      job_id: jobId,
+      min_score: minScore,
+    });
   }, [jobId, minScore]);
 }
 
@@ -315,14 +307,10 @@ export function useMLInfluencers(
   minScore = 50,
 ): UseAsyncResult<MLInfluencersResponse | null> {
   return useAsync(async () => {
-    try {
-      return await api.getMLInfluencers({
-        job_id: jobId,
-        min_score: minScore,
-      });
-    } catch {
-      return null;
-    }
+    return await api.getMLInfluencers({
+      job_id: jobId,
+      min_score: minScore,
+    });
   }, [jobId, minScore]);
 }
 
@@ -335,11 +323,7 @@ export function useCounterfactualSearch(
 ): UseAsyncResult<CounterfactualSearchResponse | null> {
   return useAsync(async () => {
     if (!query?.trim()) return null;
-    try {
-      return await api.searchCounterfactuals(query);
-    } catch {
-      return null;
-    }
+    return await api.searchCounterfactuals(query);
   }, [query]);
 }
 

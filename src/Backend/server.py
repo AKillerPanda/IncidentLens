@@ -132,7 +132,7 @@ def _cached_detect(method: str = "label", threshold: float = 0.5, size: int = 50
             return _DETECT_CACHE["data"]
 
         # Compute inside the lock to prevent thundering herd
-        result = agent_tools._REGISTRY["detect_anomalies"](method=method, threshold=threshold, size=size)
+        result = agent_tools.get_tool("detect_anomalies")(method=method, threshold=threshold, size=size)
         _DETECT_CACHE["data"] = result
         _DETECT_CACHE["ts"] = time.time()
         _DETECT_CACHE["key"] = cache_key
@@ -307,7 +307,7 @@ async def severity(flow_id: str):
     """Assess severity of a flow using z-score deviation from baseline."""
     try:
         result = await asyncio.to_thread(
-            agent_tools._REGISTRY["assess_severity"], flow_id=flow_id,
+            agent_tools.get_tool("assess_severity"), flow_id=flow_id,
         )
         if "error" in result:
             return JSONResponse(status_code=502, content=result)
@@ -567,6 +567,22 @@ async def flows_by_severity(
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+def _reject_scripts(obj: Any) -> None:
+    """Walk an ES query dict and reject anything containing 'script'.
+
+    Prevents script injection via ``script_score``, ``function_score``,
+    ``script`` fields, etc.  Raises ValueError if found.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if "script" in k.lower():
+                raise ValueError(f"Script queries are not allowed (key: '{k}')")
+            _reject_scripts(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _reject_scripts(item)
+
+
 @app.post("/api/flows/search")
 async def paginated_flow_search(req: PaginatedSearchRequest):
     """Paginated flow search using ES search_after + point-in-time.
@@ -576,11 +592,17 @@ async def paginated_flow_search(req: PaginatedSearchRequest):
     deep pagination.
     """
     try:
+        # Validate user-supplied query to prevent script injection
+        query = req.query
+        if query is not None:
+            _reject_scripts(query)
         result = await asyncio.to_thread(
             wrappers.search_with_pagination,
-            req.query, req.size, req.search_after, req.pit_id,
+            query, req.size, req.search_after, req.pit_id,
         )
         return result
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
