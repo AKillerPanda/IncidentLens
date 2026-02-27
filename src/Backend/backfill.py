@@ -178,23 +178,13 @@ class RealTimeIncidentLens:
         if enc is not None:
             try:
                 with torch.no_grad():
-                    out = enc(graph)
-
-                score = None
-                if isinstance(out, dict):
-                    score = out.get("prediction_score")
-                elif isinstance(out, (tuple, list)) and len(out) > 0:
-                    score = out[-1]
-                else:
-                    score = out
-
-                if isinstance(score, torch.Tensor):
-                    score = float(score.item())
-
-                if score is not None:
+                    # predict() returns per-edge logits of shape (E,)
+                    logits = enc.predict(graph)
+                    probs = torch.sigmoid(logits)
+                    score = float(probs.mean().item())
                     print(f"[RT] GNN anomaly score: {score:.4f}")
             except Exception as exc:
-                logger.warning("GNN forward failed: %s", exc)
+                logger.warning("GNN scoring failed: %s", exc)
 
         try:
             breakdown = wrappers.aggregate_severity_breakdown(es=self.es)

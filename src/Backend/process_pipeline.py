@@ -54,11 +54,15 @@ class RealTimeIncidentLens:
             print("[RT] No trained GNN found — using fallback embeddings.")
             return
 
-        encoder = TemporalGNNEncoder.from_checkpoint(path)
-        wrappers.set_gnn_encoder(encoder)
+        try:
+            encoder = TemporalGNNEncoder.from_checkpoint(path)
+            wrappers.set_gnn_encoder(encoder)
 
-        self.embedding_dim = encoder.embedding_dim
-        print(f"[RT] Loaded Temporal GNN ({encoder.embedding_dim} dim)")
+            self.embedding_dim = encoder.embedding_dim
+            print(f"[RT] Loaded Temporal GNN ({encoder.embedding_dim} dim)")
+        except Exception as exc:
+            print(f"[RT] Failed to load GNN checkpoint {path}: {exc}")
+            print("[RT] Falling back to synthetic embeddings.")
 
     # --------------------------------------------------------
 
@@ -143,20 +147,16 @@ class RealTimeIncidentLens:
         gnn = wrappers.get_gnn_encoder()
 
         if gnn is not None:
-            with torch.no_grad():
-                output = gnn(graph)
-
-                if isinstance(output, dict):
-                    anomaly_score = output.get("prediction_score", 0.0)
-                elif isinstance(output, (tuple, list)):
-                    anomaly_score = output[-1]
-                else:
-                    anomaly_score = output
-
-                if isinstance(anomaly_score, torch.Tensor):
-                    anomaly_score = anomaly_score.item()
-
-        anomaly_score = float(anomaly_score)
+            try:
+                with torch.no_grad():
+                    # predict() returns per-edge logits of shape (E,)
+                    logits = gnn.predict(graph)
+                    probs = torch.sigmoid(logits)
+                    # Window-level anomaly score = mean edge probability
+                    anomaly_score = float(probs.mean().item())
+            except Exception as exc:
+                print(f"[RT] GNN scoring failed: {exc}")
+                anomaly_score = 0.0
 
         print(f"[RT] GNN Anomaly Score: {anomaly_score:.4f}")
 
