@@ -58,8 +58,10 @@ jobs:
           import src.Backend.cli
           import src.Backend.csv_to_json
           import src.Backend.ingest_pipeline
-          import src.Backend.train
           import src.Backend.wrappers
+          import src.Backend.process_pipeline
+          import src.Backend.llm_reasoner
+          import src.Backend.simulation
           print('All imports OK')
           "
 
@@ -108,10 +110,10 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile.backend
-          failure-threshold: warning
+          failure-threshold: error
 
       - name: Lint Dockerfile.frontend
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile.frontend
-          failure-threshold: warning
+          failure-threshold: error

@@ -3,22 +3,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for torch / numpy
+# System deps for torch / numpy + install PyTorch CPU + torch-geometric + app deps
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch CPU-only first (smaller image, no CUDA)
-RUN pip install --no-cache-dir \
-    torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-
-# Install torch-geometric with CPU wheels
-RUN pip install --no-cache-dir \
-    torch-geometric \
-    -f https://data.pyg.org/whl/torch-2.6.0+cpu.html
-
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir \
+    torch-geometric \
+    -f https://data.pyg.org/whl/torch-2.6.0+cpu.html && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
