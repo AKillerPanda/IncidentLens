@@ -157,8 +157,8 @@ def cmd_train(args):
     if args.packets and args.labels:
         # Direct CSV mode
         print(f"Loading CSVs: packets={args.packets}, labels={args.labels}")
-        packets_df = pd.read_csv(args.packets)
-        labels_df = pd.read_csv(args.labels)
+        packets_df = pd.read_csv(args.packets, nrows=args.max_rows)
+        labels_df = pd.read_csv(args.labels, nrows=args.max_rows)
 
         sequences, info = prepare_temporal_dataset(
             packets_df,

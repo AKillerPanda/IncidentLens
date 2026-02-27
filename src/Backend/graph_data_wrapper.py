@@ -308,6 +308,37 @@ def build_sliding_window_graphs(
     label_raw = packets_df[label_col].values.astype(np.int64)
 
     # pd.factorize on concatenated src+dst gives consistent codes
+    # NaN IPs get code -1 from pd.factorize — drop those rows first
+    nan_mask_src = pd.isna(src_raw)
+    nan_mask_dst = pd.isna(dst_raw)
+    nan_mask = nan_mask_src | nan_mask_dst
+    if nan_mask.any():
+        n_dropped = int(nan_mask.sum())
+        keep = ~nan_mask
+        packets_df = packets_df.loc[keep].reset_index(drop=True)
+        src_raw = packets_df["src_ip"].values
+        dst_raw = packets_df["dst_ip"].values
+        bytes_raw = packets_df[bytes_col].values.astype(np.float64)
+        payload_raw = packets_df["payload_length"].values.astype(np.float64)
+        label_raw = packets_df[label_col].values.astype(np.int64)
+        ts_vals = packets_df["timestamp"].values.astype(np.float64)
+        # Re-assign windows with cleaned data
+        t_min, t_max = ts_vals.min(), ts_vals.max()
+        result, window_starts = _assign_window_ids(ts_vals, t_min, t_max,
+                                                   window_size, stride)
+        if isinstance(result, tuple):
+            pkt_idx, win_idx = result
+        else:
+            pkt_idx, win_idx = np.nonzero(result)
+        if len(pkt_idx) == 0:
+            return [], {}
+        # Re-encode protocol / port after filtering
+        proto_codes_full, _ = pd.factorize(packets_df["protocol"].values, sort=True)
+        port_codes_full, _ = pd.factorize(packets_df["dst_port"].values, sort=True)
+        import logging
+        logging.getLogger(__name__).info(
+            "Dropped %d rows with NaN src_ip/dst_ip", n_dropped)
+
     all_ips_arr = np.concatenate([src_raw, dst_raw])
     ip_codes_all, unique_ips = pd.factorize(all_ips_arr, sort=True)
     ip_to_id: dict[str, int] = {ip: int(i) for i, ip in enumerate(unique_ips)}
